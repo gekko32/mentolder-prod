@@ -29,8 +29,10 @@ Upstream-Update: `UPSTREAM_REF` auf die neue Revision setzen, PR, Render muss gr
 
 ## Flux-Definitionen (`flux/`)
 
-`flux/` enthaelt `OCIRepository` und Kustomizations fuer mentolder. Die Namen sind bewusst neu
+`flux/` enthaelt `OCIRepository` und Kustomizations fuer mentolder. Alle Objekte liegen im Namespace `gekko-mentolder` und laufen als `gekko-mentolder-deploy`
+(erzwungen per ValidatingAdmissionPolicy in Bachelorprojekt). Die Namen sind bewusst neu
 (`mentolder-prod*`), damit sie nicht mit `flux-mentolder*` aus Bachelorprojekt kollidieren.
+Das Secret `gekko-ghcr-auth` gehoert in den Namespace `gekko-mentolder`.
 Sie werden erst angewendet, wenn der Cluster dieses Verzeichnis liest: dazu legt Bachelorprojekt ein
 `GitRepository` auf dieses Repo plus eine `Kustomization` mit `path: ./flux` an.
 

@@ -2,7 +2,7 @@ apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: mentolder-prod
-  namespace: flux-system
+  namespace: gekko-mentolder
 spec:
   interval: 10m
   retryInterval: 2m
@@ -10,8 +10,10 @@ spec:
   dependsOn:
     # Cluster-Infrastruktur bleibt in Paddione/Bachelorprojekt.
     - name: flux-infra-controllers
+      namespace: flux-system
     # Secrets VOR dem Brand-Stack reconcilen (Race bei neuem Secret-Key).
     - name: mentolder-prod-sealed-secrets
+  serviceAccountName: gekko-mentolder-deploy
   sourceRef:
     kind: OCIRepository
     name: mentolder-manifests

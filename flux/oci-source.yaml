@@ -2,14 +2,14 @@ apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
 metadata:
   name: mentolder-manifests
-  namespace: flux-system
+  namespace: gekko-mentolder
 spec:
   interval: 10m
   url: oci://ghcr.io/gekko32/mentolder-manifests
   ref:
     tag: latest
   # Lesezugriff auf das (private) GHCR-Paket. Secret mit gekko32-Token (read:packages) im Cluster
-  # anlegen, oder das Paket oeffentlich machen und secretRef entfernen.
+  # (Namespace gekko-mentolder) anlegen, oder das Paket oeffentlich machen und secretRef entfernen.
   secretRef:
     name: gekko-ghcr-auth
   # Nur Artefakte, die dieser Workflow signiert hat (keyless cosign, GitHub OIDC).
