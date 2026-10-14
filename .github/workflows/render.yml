@@ -41,8 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           for p in prod-mentolder prod-fleet/mentolder prod-fleet/website-mentolder \
-                   environments/mentolder.yaml environments/fleet-mentolder.yaml \
-                   environments/sealed-secrets/fleet-mentolder.yaml; do
+                   environments/mentolder.yaml environments/fleet-mentolder.yaml; do
             mkdir -p "upstream/$(dirname "$p")"
             rm -rf "upstream/$p"
             cp -r "overlay/$p" "upstream/$p"
@@ -95,7 +94,7 @@ jobs:
           set -euo pipefail
           bash scripts/ci-dummy-secrets.sh
           bash scripts/flux-render-artifact.sh --out ../out \
-            --only mentolder,website-mentolder,sealed-secrets-mentolder
+            --only mentolder,website-mentolder
 
       - name: Push and sign OCI artifact
         id: push

@@ -11,8 +11,10 @@ spec:
     # Cluster-Infrastruktur bleibt in Paddione/Bachelorprojekt.
     - name: flux-infra-controllers
       namespace: flux-system
-    # Secrets VOR dem Brand-Stack reconcilen (Race bei neuem Secret-Key).
-    - name: mentolder-prod-sealed-secrets
+    # Secrets VOR dem Brand-Stack reconcilen (Race bei neuem Secret-Key). Die SealedSecrets
+    # gehoeren zum Cluster und bleiben in Paddione/Bachelorprojekt.
+    - name: flux-sealed-secrets-mentolder
+      namespace: flux-system
   serviceAccountName: gekko-mentolder-deploy
   sourceRef:
     kind: OCIRepository

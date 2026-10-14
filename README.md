@@ -12,7 +12,6 @@ Betriebsquelle der mentolder-Produktion. Die Basen (`k3d/`, `prod/`, Render-Skri
 | `prod-fleet/mentolder/` | Fleet-Overlay (Sessions, Studio, Brain, Monitoring) |
 | `prod-fleet/website-mentolder/` | Website-Overlay |
 | `environments/mentolder.yaml`, `fleet-mentolder.yaml` | Umgebungsvariablen |
-| `environments/sealed-secrets/fleet-mentolder.yaml` | SealedSecrets (an den Cluster-Schluessel gebunden) |
 | `UPSTREAM_REF` | gepinnte Bachelorprojekt-Revision |
 | `images.env` | gepinnte Image-Digests |
 
@@ -20,7 +19,7 @@ Betriebsquelle der mentolder-Produktion. Die Basen (`k3d/`, `prod/`, Render-Skri
 
 1. Aenderung hier per PR nach `main`.
 2. `.github/workflows/render.yml` checkt upstream bei `UPSTREAM_REF` aus, legt diese Dateien darueber,
-   rendert mit `scripts/flux-render-artifact.sh --only mentolder,website-mentolder,sealed-secrets-mentolder`,
+   rendert mit `scripts/flux-render-artifact.sh --only mentolder,website-mentolder`,
    pusht `ghcr.io/gekko32/mentolder-manifests:latest` und signiert es per cosign (keyless).
 3. Der Cluster zieht das Artefakt ueber ein `OCIRepository` mit cosign-Verifikation auf
    `gekko32/mentolder-prod/.github/workflows/render.yml@refs/heads/main`.
@@ -31,7 +30,8 @@ Upstream-Update: `UPSTREAM_REF` auf die neue Revision setzen, PR, Render muss gr
 
 `flux/` enthaelt `OCIRepository` und Kustomizations fuer mentolder. Alle Objekte liegen im Namespace `gekko-mentolder` und laufen als `gekko-mentolder-deploy`
 (erzwungen per ValidatingAdmissionPolicy in Bachelorprojekt). Die Namen sind bewusst neu
-(`mentolder-prod*`), damit sie nicht mit `flux-mentolder*` aus Bachelorprojekt kollidieren.
+(`mentolder-prod*`). Die SealedSecrets (`flux-sealed-secrets-mentolder`) und die Plattform bleiben in
+Paddione/Bachelorprojekt, `mentolder-prod` haengt per `dependsOn` davon ab.
 Sie werden erst angewendet, wenn der Cluster dieses Verzeichnis liest: dazu legt Bachelorprojekt ein
 `GitRepository` auf dieses Repo plus eine `Kustomization` mit `path: ./flux` an.
 
