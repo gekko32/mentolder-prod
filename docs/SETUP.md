@@ -1,8 +1,14 @@
 # Einrichtung vor der Umstellung
 
-Reihenfolge. Jeder Schritt ist unabhaengig pruefbar. Befehle mit `gh` laufen als Repo-Admin (gekko32).
+Reihenfolge. Befehle mit `gh` laufen als Repo-Admin (gekko32).
 
-## 1. Branch-Protection auf `main` (gekko32)
+## 1. Repo oeffentlich stellen (gekko32)
+
+Settings → General → Danger Zone → Change visibility → Public. Der Inhalt von `environments/mentolder.yaml`
+(Adresse, Telefon, USt-ID) ist in Paddione/Bachelorprojekt bereits oeffentlich, die Sealed Secrets sind
+verschluesselt. Danach liest Flux das Repo per HTTPS ohne Secret, es gibt keinen Deploy Key.
+
+## 2. Branch-Protection auf `main` (gekko32)
 
 ```bash
 gh api -X PUT repos/gekko32/mentolder-prod/branches/main/protection --input - <<'JSON'
@@ -21,24 +27,8 @@ gh api -X PUT repos/gekko32/mentolder-prod/branches/main/protection --input - <<
 JSON
 ```
 
-Private Repos brauchen dafuer GitHub Pro/Team. Sonst: Settings → Branches fehlt die Option, dann das
-Repo oeffentlich stellen oder den Plan wechseln.
-
 Danach kann niemand mehr direkt nach `main` pushen, auch gekko32 nicht. `CODEOWNERS` verlangt fuer
 `flux/`, `.github/workflows/` und `UPSTREAM_REF` einen Review von `@Paddione`.
-
-## 2. Deploy Key fuer das GitRepository
-
-```bash
-ssh-keygen -t ed25519 -N '' -C 'flux gekko-mentolder-prod' -f ./gekko-mentolder-deploy
-gh repo deploy-key add ./gekko-mentolder-deploy.pub -R gekko32/mentolder-prod -t flux-fleet
-ssh-keyscan github.com > ./known_hosts 2>/dev/null
-kubectl --context fleet -n flux-system create secret generic gekko-mentolder-git-auth \
-  --from-file=identity=./gekko-mentolder-deploy --from-file=known_hosts=./known_hosts
-shred -u ./gekko-mentolder-deploy ./gekko-mentolder-deploy.pub ./known_hosts
-```
-
-Der Key ist read-only (Standard bei `gh repo deploy-key add`, ohne `--allow-write`).
 
 ## 3. Lesezugriff auf das Artefakt
 
