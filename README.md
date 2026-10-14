@@ -27,6 +27,17 @@ Betriebsquelle der mentolder-Produktion. Die Basen (`k3d/`, `prod/`, Render-Skri
 
 Upstream-Update: `UPSTREAM_REF` auf die neue Revision setzen, PR, Render muss gruen sein.
 
+## Flux-Definitionen (`flux/`)
+
+`flux/` enthaelt `OCIRepository` und Kustomizations fuer mentolder. Die Namen sind bewusst neu
+(`mentolder-prod*`), damit sie nicht mit `flux-mentolder*` aus Bachelorprojekt kollidieren.
+Sie werden erst angewendet, wenn der Cluster dieses Verzeichnis liest: dazu legt Bachelorprojekt ein
+`GitRepository` auf dieses Repo plus eine `Kustomization` mit `path: ./flux` an.
+
+Umstellung (nicht vorher): alte `flux-mentolder*` suspendieren und mit
+`kustomize.toolkit.fluxcd.io/prune: disabled` absichern, neue Kustomizations reconcilen lassen, erst dann
+die alten entfernen. Ein Entfernen mit `prune: true` loescht sonst die Workloads.
+
 ## Einschalten
 
 Der Workflow laeuft bei `push` nur mit der Repo-Variable `FLUX_ENABLED=true`. `workflow_dispatch`

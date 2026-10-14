@@ -1,0 +1,29 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: mentolder-prod
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 2m
+  timeout: 10m
+  dependsOn:
+    # Cluster-Infrastruktur bleibt in Paddione/Bachelorprojekt.
+    - name: flux-infra-controllers
+    # Secrets VOR dem Brand-Stack reconcilen (Race bei neuem Secret-Key).
+    - name: mentolder-prod-sealed-secrets
+  sourceRef:
+    kind: OCIRepository
+    name: mentolder-manifests
+  path: ./mentolder
+  prune: true
+  # Nur Workloads, die diese Kustomization selbst ausrollt (kein Gate auf fremde Infrastruktur).
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: shared-db
+      namespace: workspace
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: pocket-id
+      namespace: workspace
