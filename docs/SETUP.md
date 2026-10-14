@@ -16,7 +16,7 @@ gh api -X PUT repos/gekko32/mentolder-prod/branches/main/protection --input - <<
   "required_status_checks": null,
   "enforce_admins": true,
   "required_pull_request_reviews": {
-    "required_approving_review_count": 1,
+    "required_approving_review_count": 0,
     "require_code_owner_reviews": true,
     "dismiss_stale_reviews": true
   },
@@ -27,8 +27,9 @@ gh api -X PUT repos/gekko32/mentolder-prod/branches/main/protection --input - <<
 JSON
 ```
 
-Danach kann niemand mehr direkt nach `main` pushen, auch gekko32 nicht. `CODEOWNERS` verlangt fuer
-`flux/`, `.github/workflows/` und `UPSTREAM_REF` einen Review von `@Paddione`.
+Danach kann niemand mehr direkt nach `main` pushen, auch gekko32 nicht. `CODEOWNERS` verlangt nur fuer
+`flux/`, `.github/`, `prod-mentolder/`, `prod-fleet/` und `environments/` einen Review. PRs, die nur
+`UPSTREAM_REF`, `images.env` oder Doku aendern, koennen ohne Review gemergt werden.
 
 ## 3. Artefakt
 
