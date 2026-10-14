@@ -1,12 +1,21 @@
 # Einrichtung vor der Umstellung
 
-Reihenfolge. Befehle mit `gh` laufen als Repo-Admin (gekko32).
+Vier kurze Schritte, dann ist `mentolder-prod` bereit für den Betrieb.
+Die Reihenfolge zählt. Befehle mit `gh` laufen als Repo-Admin (gekko32).
 
-## 1. Repo oeffentlich stellen (gekko32)
+- [ ] 1. Repo öffentlich stellen
+- [ ] 2. Branch-Protection auf `main`
+- [ ] 3. Artefakt prüfen
+- [ ] 4. Commit-Signaturen (optional, F2)
 
-Settings → General → Danger Zone → Change visibility → Public. Der Inhalt von `environments/mentolder.yaml`
-(Adresse, Telefon, USt-ID) ist in Paddione/Bachelorprojekt bereits oeffentlich, die Sealed Secrets sind
-verschluesselt. Danach liest Flux das Repo per HTTPS ohne Secret, es gibt keinen Deploy Key.
+## 1. Repo öffentlich stellen (gekko32)
+
+*Settings → General → Danger Zone → Change visibility → Public.*
+
+Warum das sicher ist: Der Inhalt von `environments/mentolder.yaml`
+(Adresse, Telefon, USt-ID) ist in Paddione/Bachelorprojekt bereits
+öffentlich, die Sealed Secrets sind verschlüsselt. Danach liest Flux das
+Repo per HTTPS ohne Secret — es gibt keinen Deploy Key zu verwalten.
 
 ## 2. Branch-Protection auf `main` (gekko32)
 
@@ -27,16 +36,22 @@ gh api -X PUT repos/gekko32/mentolder-prod/branches/main/protection --input - <<
 JSON
 ```
 
-Danach kann niemand mehr direkt nach `main` pushen, auch gekko32 nicht. `CODEOWNERS` verlangt nur fuer
-`flux/`, `.github/`, `prod-mentolder/`, `prod-fleet/` und `environments/` einen Review. PRs, die nur
-`UPSTREAM_REF`, `images.env` oder Doku aendern, koennen ohne Review gemergt werden.
+Danach kann niemand mehr direkt nach `main` pushen, auch gekko32 nicht.
+[`CODEOWNERS`](../.github/CODEOWNERS) verlangt nur für `flux/`,
+`.github/`, `prod-mentolder/`, `prod-fleet/` und `environments/` einen
+Review. PRs, die nur `UPSTREAM_REF`, `images.env` oder Doku ändern,
+können ohne Review gemergt werden.
 
 ## 3. Artefakt
 
-Das Paket `mentolder-manifests` ist oeffentlich, der Cluster braucht kein Registry-Secret.
+Das Paket `mentolder-manifests` ist öffentlich, der Cluster braucht kein
+Registry-Secret. Nach dem ersten Render-Lauf liegt es unter
+`ghcr.io/gekko32/mentolder-manifests:latest` (plus `sha-<SHA>`- und
+`img-<Hash>`-Tags) und ist per cosign signiert.
 
 ## 4. Commit-Signaturen (optional, F2)
 
-Oeffentliche Schluessel (GPG) in ein Secret `gekko-mentolder-git-verify` legen und am `GitRepository`
-`spec.verify: {mode: head, secretRef: {name: gekko-mentolder-git-verify}}` setzen. Commits auf `main`
-muessen dann signiert sein.
+Öffentliche Schlüssel (GPG) in ein Secret `gekko-mentolder-git-verify`
+legen und am `GitRepository` `spec.verify: {mode: head, secretRef: {name:
+gekko-mentolder-git-verify}}` setzen. Commits auf `main` müssen dann
+signiert sein. Praktisch als zweiter Schritt, wenn die ersten drei sitzen.
