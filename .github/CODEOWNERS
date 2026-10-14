@@ -1,0 +1,6 @@
+# Aenderungen an den Flux-Definitionen und am Render-Workflow brauchen einen Review von Paddione,
+# weil sie auf dem Cluster mit gekko-mentolder-deploy (cluster-admin) laufen.
+/flux/                   @Paddione @gekko32
+/.github/workflows/      @Paddione @gekko32
+/UPSTREAM_REF            @Paddione @gekko32
+*                        @gekko32
