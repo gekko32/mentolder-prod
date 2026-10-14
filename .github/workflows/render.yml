@@ -5,8 +5,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-  # Zieht neue Website-Images nach: rendert nur, wenn ghcr.io/paddione/website:latest einen
-  # Digest hat, zu dem es noch kein Artefakt-Tag web-<digest> gibt.
+  # Zieht neue Website- und Brett-Images nach: rendert nur, wenn ghcr.io/paddione/website:latest
+  # oder workspace-brett:latest eine Digest-Kombination hat, zu der es noch kein Artefakt-Tag img-<hash> gibt.
   schedule:
     - cron: '*/20 * * * *'
 
@@ -90,8 +90,8 @@ jobs:
           fi
           echo "WEBSITE_IMAGE_DIGEST=$WEBSITE_IMAGE_DIGEST" >> "$GITHUB_ENV"
           echo "BRETT_IMAGE_DIGEST=$BRETT_IMAGE_DIGEST" >> "$GITHUB_ENV"
-          tag="web-${WEBSITE_IMAGE_DIGEST#sha256:}"
-          tag="${tag:0:16}"
+          # Ein Tag je Kombination aus Website- und Brett-Digest.
+          tag="img-$(printf '%s%s' "$WEBSITE_IMAGE_DIGEST" "$BRETT_IMAGE_DIGEST" | sha256sum | cut -c1-16)"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           # Geplanter Lauf: nichts tun, wenn fuer diesen Website-Digest schon ein Artefakt existiert.
           skip=false
