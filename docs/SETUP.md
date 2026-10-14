@@ -30,17 +30,9 @@ JSON
 Danach kann niemand mehr direkt nach `main` pushen, auch gekko32 nicht. `CODEOWNERS` verlangt fuer
 `flux/`, `.github/workflows/` und `UPSTREAM_REF` einen Review von `@Paddione`.
 
-## 3. Lesezugriff auf das Artefakt
+## 3. Artefakt
 
-Variante A, Paket bleibt privat: gekko32-Token mit nur `read:packages` erzeugen.
-
-```bash
-kubectl --context fleet create namespace gekko-mentolder --dry-run=client -o yaml | kubectl --context fleet apply -f -
-kubectl --context fleet -n gekko-mentolder create secret docker-registry gekko-ghcr-auth \
-  --docker-server=ghcr.io --docker-username=gekko32 --docker-password="$GHCR_READ_TOKEN"
-```
-
-Variante B: Paket `mentolder-manifests` oeffentlich machen und `secretRef` in `flux/oci-source.yaml` entfernen.
+Das Paket `mentolder-manifests` ist oeffentlich, der Cluster braucht kein Registry-Secret.
 
 ## 4. Commit-Signaturen (optional, F2)
 

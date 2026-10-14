@@ -8,10 +8,7 @@ spec:
   url: oci://ghcr.io/gekko32/mentolder-manifests
   ref:
     tag: latest
-  # Lesezugriff auf das (private) GHCR-Paket. Secret mit gekko32-Token (read:packages) im Cluster
-  # (Namespace gekko-mentolder) anlegen, oder das Paket oeffentlich machen und secretRef entfernen.
-  secretRef:
-    name: gekko-ghcr-auth
+  # Das Paket ghcr.io/gekko32/mentolder-manifests ist oeffentlich, kein Lesegeheimnis noetig.
   # Nur Artefakte, die dieser Workflow signiert hat (keyless cosign, GitHub OIDC).
   verify:
     provider: cosign
