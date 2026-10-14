@@ -5,6 +5,10 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+  # Zieht neue Website-Images nach: rendert nur, wenn ghcr.io/paddione/website:latest einen
+  # Digest hat, zu dem es noch kein Artefakt-Tag web-<digest> gibt.
+  schedule:
+    - cron: '*/20 * * * *'
 
 concurrency:
   group: render-mentolder-${{ github.ref }}
@@ -22,8 +26,8 @@ jobs:
   render:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Wie upstream: erst nach bewusstem Einschalten (Repo-Variable FLUX_ENABLED=true).
-    if: github.event_name == 'workflow_dispatch' || vars.FLUX_ENABLED == 'true'
+    # push erst nach bewusstem Einschalten (Repo-Variable FLUX_ENABLED=true).
+    if: github.event_name != 'push' || vars.FLUX_ENABLED == 'true'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -76,6 +80,7 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC1091
           source overlay/images.env
+          # Leer = aktuelles :latest. Ein gesetzter Wert in images.env pinnt bewusst.
           if [[ -z "${WEBSITE_IMAGE_DIGEST:-}" ]]; then
             WEBSITE_IMAGE_DIGEST="$(crane digest ghcr.io/paddione/website:latest)"
           fi
@@ -85,8 +90,20 @@ jobs:
           fi
           echo "WEBSITE_IMAGE_DIGEST=$WEBSITE_IMAGE_DIGEST" >> "$GITHUB_ENV"
           echo "BRETT_IMAGE_DIGEST=$BRETT_IMAGE_DIGEST" >> "$GITHUB_ENV"
+          tag="web-${WEBSITE_IMAGE_DIGEST#sha256:}"
+          tag="${tag:0:16}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # Geplanter Lauf: nichts tun, wenn fuer diesen Website-Digest schon ein Artefakt existiert.
+          skip=false
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]] \
+             && crane ls "${ARTIFACT}" 2>/dev/null | grep -qx "$tag"; then
+            skip=true
+            echo "Artefakt fuer $tag existiert bereits, nichts zu tun."
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
 
       - name: Render mentolder components
+        if: steps.digests.outputs.skip != 'true'
         working-directory: upstream
         env:
           CI: "true"
@@ -97,6 +114,7 @@ jobs:
             --only mentolder,website-mentolder
 
       - name: Push and sign OCI artifact
+        if: steps.digests.outputs.skip != 'true'
         id: push
         run: |
           set -euo pipefail
@@ -107,4 +125,5 @@ jobs:
             --output json)"
           digest="$(printf '%s' "$OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
           flux tag artifact "oci://${ARTIFACT}:latest" --tag "sha-${GITHUB_SHA}"
+          flux tag artifact "oci://${ARTIFACT}:latest" --tag "${{ steps.digests.outputs.tag }}"
           cosign sign --yes "${ARTIFACT}@${digest}"
