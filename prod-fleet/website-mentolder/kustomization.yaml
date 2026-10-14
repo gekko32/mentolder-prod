@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: website
+resources:
+  - ../../k3d/website.yaml
+  - ../../k3d/website-seller-config.yaml
+  # mentolder HTTPS Ingress (tracked here to survive cluster rebuilds — T000146)
+  - ../website-common/domain-config.yaml
+  # T002052: website-scoped security-headers (no noindex) — keeps the public site crawlable
+  - website-security-headers.yaml
+  - website-ingress-web.yaml
+patches:
+  - target:
+      kind: Deployment
+      name: website
+    path: website-patch.yaml
