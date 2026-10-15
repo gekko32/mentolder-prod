@@ -1,11 +1,12 @@
-# Einrichtung vor der Umstellung
+# Einrichtung
 
-Vier kurze Schritte, dann ist `mentolder-prod` bereit für den Betrieb.
-Die Reihenfolge zählt. Befehle mit `gh` laufen als Repo-Admin (gekko32).
+Die Umstellung ist seit 2026-10-14 abgeschlossen. Diese Seite hält fest,
+wie das Repo eingerichtet ist, falls es neu aufgesetzt werden muss.
+Befehle mit `gh` laufen als Repo-Admin (gekko32).
 
-- [ ] 1. Repo öffentlich stellen
-- [ ] 2. Branch-Protection auf `main`
-- [ ] 3. Artefakt prüfen
+- [x] 1. Repo öffentlich stellen
+- [x] 2. Branch-Protection auf `main`
+- [x] 3. Artefakt prüfen
 - [ ] 4. Commit-Signaturen (optional, F2)
 
 ## 1. Repo öffentlich stellen (gekko32)

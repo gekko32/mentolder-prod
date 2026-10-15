@@ -19,7 +19,7 @@ So bleibt die Produktion nachvollziehbar: ein Pin, ein Render, ein Artefakt.
 | `prod-fleet/website-mentolder/` | Website-Overlay (`web.mentolder.de`) |
 | `environments/mentolder.yaml`, `environments/fleet-mentolder.yaml` | Umgebungsvariablen für mentolder |
 | `flux/` | `OCIRepository` + Kustomizations (`mentolder-prod*`, Namespace `gekko-mentolder`) |
-| `docs/SETUP.md` | Schritt-für-Schritt-Einrichtung vor der Umstellung |
+| `docs/SETUP.md` | Einrichtung des Repos (Protection, Artefakt, Signaturen) |
 | `.github/workflows/render.yml` | Baut und signiert das Deploy-Artefakt |
 | `UPSTREAM_REF` | Gepinnte Bachelorprojekt-Revision |
 | `images.env` | Gepinnte Image-Digests (leer = `:latest` folgen) |
@@ -54,29 +54,25 @@ Paddione/Bachelorprojekt: die SealedSecrets
 (`flux-sealed-secrets-mentolder`) und die Plattform. `mentolder-prod`
 hängt per `dependsOn` davon ab und reconcilt erst danach.
 
-Der Cluster liest dieses Verzeichnis erst, wenn Bachelorprojekt ein
-`GitRepository` auf dieses Repo plus eine `Kustomization` mit
-`path: ./flux` anlegt.
+Der Cluster liest dieses Verzeichnis über das `GitRepository`
+`gekko-mentolder-prod` und die Kustomization `gekko-mentolder-flux`
+(beide in `flux-system`, angelegt von Bachelorprojekt).
 
-> **Umstellung — bitte in dieser Reihenfolge:** alte `flux-mentolder*`
-> suspendieren und mit `kustomize.toolkit.fluxcd.io/prune: disabled`
-> absichern, neue Kustomizations reconcilen lassen, erst dann die alten
-> entfernen. Ein Entfernen mit `prune: true` löscht sonst die Workloads.
+## Betrieb
 
-## Einschalten
+- **Automatik:** Jeder Merge nach `main` rendert und rollt aus
+  (Repo-Variable `FLUX_ENABLED=true`). Zusätzlich prüft der Workflow alle
+  20 Minuten, ob es neue Images `website:latest` oder `workspace-brett:latest`
+  gibt, und rendert dann neu.
+- **Von Hand:** *Actions → Render mentolder artifact → Run workflow*.
+- **Status im Cluster:** `flux get kustomizations -n gekko-mentolder`.
 
-Der Workflow läuft bei `push` nur mit der Repo-Variablen
-`FLUX_ENABLED=true`. `workflow_dispatch` läuft immer — gut zum
-Ausprobieren ohne den Automatik-Betrieb einzuschalten.
+## Was nicht hier liegt
 
-## Noch offen
-
-- `workspace-brett` ist privat. Entweder das Paket öffentlich machen,
-  `gekko32/mentolder-prod` unter *Package settings → Manage Actions
-  access* Lesezugriff geben oder `BRETT_IMAGE_DIGEST` in
-  [`images.env`](./images.env) pinnen.
-
-## Nächster Schritt
-
-Weiter geht es mit der [Einrichtung vor der Umstellung](./docs/SETUP.md) —
-vier kurze Schritte, danach ist der Betrieb bereit.
+| Teil | Ort |
+|---|---|
+| Basen, Render-Skripte | Paddione/Bachelorprojekt bei `UPSTREAM_REF` |
+| SealedSecrets (`flux-sealed-secrets-mentolder`) | Paddione/Bachelorprojekt |
+| Plattform (Traefik, cert-manager, coturn) | Paddione/Bachelorprojekt |
+| Images `ghcr.io/paddione/*` | CI von Paddione/Bachelorprojekt |
+| Entwicklungswerkzeuge | nicht in Prod (dotfiles bzw. Dev-Cluster) |
