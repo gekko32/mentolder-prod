@@ -14,3 +14,24 @@ patches:
       kind: Deployment
       name: website
     path: website-patch.yaml
+  # Egress zum GPU-Entwicklungshost (192.168.100.0/24) gehoert nicht in Prod.
+  - target: { group: networking.k8s.io, version: v1, kind: NetworkPolicy, name: allow-llm-egress }
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-llm-egress
+  # Mediaviewer, VideoVault und Terminal laufen nicht in mentolder-Prod. Leere Hosts
+  # blenden die Sidekick-Kacheln aus (Bachelorprojekt #6717), statt auf 404 zu verlinken.
+  - target: { version: v1, kind: ConfigMap, name: domain-config }
+    patch: |-
+      - op: replace
+        path: /data/MEDIAVIEWER_HOST
+        value: ""
+      - op: replace
+        path: /data/VIDEOVAULT_DOMAIN
+        value: ""
+      - op: replace
+        path: /data/TERMINAL_HOST
+        value: ""

@@ -55,7 +55,6 @@ env_vars:
   TURN_NODE: "gekko-hetzner-2"
   NEXTCLOUD_EXTERNAL_URL: "https://files.mentolder.de"
   AUTH_EXTERNAL_URL: "https://auth.mentolder.de"
-  VAULT_EXTERNAL_URL: "https://vault.mentolder.de"
   BRAIN_EXTERNAL_URL: "https://brain.mentolder.de"
   WHITEBOARD_EXTERNAL_URL: "https://files.mentolder.de/apps/files"
   TRAEFIK_EXTERNAL_URL: "https://traefik.mentolder.de"
@@ -75,14 +74,14 @@ env_vars:
   POCKET_ID_URL: "http://pocket-id.workspace.svc.cluster.local:1411"
   # System-test failure loop master kill-switch.
   SYSTEMTEST_LOOP_ENABLED: "true"
-  LLM_HOST_IP: "192.168.100.10"
-  COMFY_HOST_IP: "192.168.100.10"
-  COMFY_PORT: "8189"
+  # Entwicklungswerkzeuge (ComfyUI, Web-Terminal, GPU-Host) laufen nicht in Prod;
+  # leeres COMFY_HOST_IP schaltet die 3D-Generierung ab (503).
   TERMINAL_OVERLAY_IP: "10.20.0.10"
   LLM_ENABLED: "true"
   LLM_RERANK_ENABLED: "false"
-  LLM_RERANKER_URL: "http://llm-proxy.workspace-dev.svc.cluster.local:18235"
-  LLM_EMBED_URL: "http://llm-proxy.workspace-dev.svc.cluster.local:18235"
+  # In-Cluster-bge (replicas 0 bis zur Aktivierung, siehe docs/runbooks/ai-services-scale-zero.md).
+  LLM_RERANKER_URL: "http://llm-gateway-rerank.workspace.svc.cluster.local:8081"
+  LLM_EMBED_URL: "http://llm-gateway-embed.workspace.svc.cluster.local:8081"
 
   STUDIO_DOMAIN: studio.mentolder.de
   STUDIO_IMAGE: ghcr.io/paddione/studio-server
