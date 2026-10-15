@@ -260,13 +260,173 @@ patches:
       metadata:
         name: oauth2-proxy-mediaviewer
 
-  # D3 (T016529): Vaultwarden-PVC von Longhorn (Basis-Patch in prod-mentolder)
-  # auf local-path zurueckstellen — im gekko-Cluster gibt es kein Longhorn.
-  - target: { kind: PersistentVolumeClaim, name: vaultwarden-data-pvc }
+  # Entwicklungswerkzeuge gehoeren nicht in Prod (dotfiles bzw. devmesh): ComfyUI/Rigger,
+  # Web-Terminal, GPU-Host-Egress, *.localhost-Routen und der Dev-Stack-Zugang zu Pocket-ID.
+  # tracking.mentolder.de zeigte auf den nicht vorhandenen Service bachelorprojekt.
+  - target: { group: networking.k8s.io, version: v1, kind: Ingress, name: workspace-ingress-tracking }
     patch: |-
-      apiVersion: v1
-      kind: PersistentVolumeClaim
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
       metadata:
-        name: vaultwarden-data-pvc
-      spec:
-        storageClassName: local-path
+        name: workspace-ingress-tracking
+  - target: { group: networking.k8s.io, version: v1, kind: Ingress, name: workspace-ingress-comfy }
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: workspace-ingress-comfy
+  - target: { group: networking.k8s.io, version: v1, kind: Ingress, name: workspace-ingress-terminal }
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: workspace-ingress-terminal
+  - target: { group: apps, version: v1, kind: Deployment, name: oauth2-proxy-comfy }
+    patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: oauth2-proxy-comfy
+  - target: { group: apps, version: v1, kind: Deployment, name: oauth2-proxy-terminal }
+    patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: oauth2-proxy-terminal
+  - target: { version: v1, kind: Service, name: oauth2-proxy-comfy }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: oauth2-proxy-comfy
+  - target: { version: v1, kind: Service, name: oauth2-proxy-terminal }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: oauth2-proxy-terminal
+  - target: { version: v1, kind: Service, name: comfy-gateway }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: comfy-gateway
+  - target: { version: v1, kind: Service, name: terminal-bridge }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: terminal-bridge
+  - target: { version: v1, kind: Service, name: rigger-gateway }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: rigger-gateway
+  - target: { version: v1, kind: Endpoints, name: comfy-gateway }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Endpoints
+      metadata:
+        name: comfy-gateway
+  - target: { version: v1, kind: Endpoints, name: terminal-bridge }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Endpoints
+      metadata:
+        name: terminal-bridge
+  - target: { version: v1, kind: Endpoints, name: rigger-gateway }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Endpoints
+      metadata:
+        name: rigger-gateway
+  - target: { group: traefik.io, version: v1alpha1, kind: Middleware, name: terminal-embed-headers }
+    patch: |-
+      $patch: delete
+      apiVersion: traefik.io/v1alpha1
+      kind: Middleware
+      metadata:
+        name: terminal-embed-headers
+  - target: { group: traefik.io, version: v1alpha1, kind: IngressRoute, name: mailpit-dev }
+    patch: |-
+      $patch: delete
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: mailpit-dev
+  - target: { group: traefik.io, version: v1alpha1, kind: IngressRoute, name: studio-localhost }
+    patch: |-
+      $patch: delete
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: studio-localhost
+  - target: { group: traefik.io, version: v1alpha1, kind: IngressRoute, name: traefik-dashboard-dev }
+    patch: |-
+      $patch: delete
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: traefik-dashboard-dev
+  - target: { group: networking.k8s.io, version: v1, kind: NetworkPolicy, name: allow-llm-gateway-egress }
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-llm-gateway-egress
+  - target: { group: networking.k8s.io, version: v1, kind: NetworkPolicy, name: allow-devstack-to-pocket-id-ingress }
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-devstack-to-pocket-id-ingress
+
+  # IP-Allowlist auf das Entwicklernetz 192.168.100.0/24, von keiner Route mehr genutzt.
+  - target: { group: traefik.io, version: v1alpha1, kind: Middleware, name: wg-only }
+    patch: |-
+      $patch: delete
+      apiVersion: traefik.io/v1alpha1
+      kind: Middleware
+      metadata:
+        name: wg-only
+
+  # www.mentolder.de wie die Apex-Domain auf web.mentolder.de umleiten (vorher 404).
+  - target: { group: networking.k8s.io, version: v1, kind: Ingress, name: workspace-ingress-apex }
+    patch: |-
+      - op: add
+        path: /spec/rules/-
+        value:
+          host: www.mentolder.de
+          http:
+            paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: old-webspace
+                    port:
+                      number: 443
+      - op: add
+        path: /spec/tls/0/hosts/-
+        value: www.mentolder.de
+  - target: { group: traefik.io, version: v1alpha1, kind: Middleware, name: redirect-apex-to-web }
+    patch: |-
+      - op: replace
+        path: /spec/redirectRegex/regex
+        value: ^https?://(?:www\.)?mentolder\.de(.*)

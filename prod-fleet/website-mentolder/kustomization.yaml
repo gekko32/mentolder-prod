@@ -14,3 +14,11 @@ patches:
       kind: Deployment
       name: website
     path: website-patch.yaml
+  # Egress zum GPU-Entwicklungshost (192.168.100.0/24) gehoert nicht in Prod.
+  - target: { group: networking.k8s.io, version: v1, kind: NetworkPolicy, name: allow-llm-egress }
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-llm-egress
