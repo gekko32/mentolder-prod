@@ -7,4 +7,9 @@ spec:
     spec:
       containers:
         - name: brett
-          image: ghcr.io/paddione/workspace-brett@${BRETT_IMAGE_DIGEST}
+          # Eigenes Brett-Image (Gerald, 18.10.2026): gebaut aus github.com/gekko32/brett.
+          image: ghcr.io/gekko32/brett@${BRETT_IMAGE_DIGEST}
+          env:
+            # Neuladen waehrend einer laufenden Sitzung erlauben (sonst 409 nach F5).
+            - name: BRETT_RECONNECT_GUARD
+              value: "off"

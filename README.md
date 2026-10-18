@@ -62,7 +62,7 @@ Der Cluster liest dieses Verzeichnis über das `GitRepository`
 
 - **Automatik:** Jeder Merge nach `main` rendert und rollt aus
   (Repo-Variable `FLUX_ENABLED=true`). Zusätzlich prüft der Workflow alle
-  20 Minuten, ob es neue Images `website:latest` oder `workspace-brett:latest`
+  20 Minuten, ob es neue Images `website:latest` oder `gekko32/brett:latest`
   gibt, und rendert dann neu.
 - **Von Hand:** *Actions → Render mentolder artifact → Run workflow*.
 - **Status im Cluster:** `flux get kustomizations -n gekko-mentolder`.
