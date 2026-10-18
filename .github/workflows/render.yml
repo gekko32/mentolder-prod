@@ -6,7 +6,7 @@ on:
   push:
     branches: [main]
   # Zieht neue Website- und Brett-Images nach: rendert nur, wenn ghcr.io/paddione/website:latest
-  # oder workspace-brett:latest eine Digest-Kombination hat, zu der es noch kein Artefakt-Tag img-<hash> gibt.
+  # oder gekko32/brett:latest eine Digest-Kombination hat, zu der es noch kein Artefakt-Tag img-<hash> gibt.
   schedule:
     - cron: '*/20 * * * *'
 
@@ -85,8 +85,8 @@ jobs:
             WEBSITE_IMAGE_DIGEST="$(crane digest ghcr.io/paddione/website:latest)"
           fi
           if [[ -z "${BRETT_IMAGE_DIGEST:-}" ]]; then
-            BRETT_IMAGE_DIGEST="$(crane digest ghcr.io/paddione/workspace-brett:latest)" \
-              || { echo "workspace-brett nicht lesbar: BRETT_IMAGE_DIGEST in images.env setzen." >&2; exit 1; }
+            BRETT_IMAGE_DIGEST="$(crane digest ghcr.io/gekko32/brett:latest)" \
+              || { echo "gekko32/brett nicht lesbar: BRETT_IMAGE_DIGEST in images.env setzen." >&2; exit 1; }
           fi
           echo "WEBSITE_IMAGE_DIGEST=$WEBSITE_IMAGE_DIGEST" >> "$GITHUB_ENV"
           echo "BRETT_IMAGE_DIGEST=$BRETT_IMAGE_DIGEST" >> "$GITHUB_ENV"
