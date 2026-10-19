@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-  # Zieht neue Website- und Brett-Images nach: rendert nur, wenn ghcr.io/paddione/website:latest
+  # Zieht neue Website- und Brett-Images nach: rendert nur, wenn ghcr.io/gekko32/website:latest
   # oder gekko32/brett:latest eine Digest-Kombination hat, zu der es noch kein Artefakt-Tag img-<hash> gibt.
   schedule:
     - cron: '*/20 * * * *'
@@ -82,7 +82,8 @@ jobs:
           source overlay/images.env
           # Leer = aktuelles :latest. Ein gesetzter Wert in images.env pinnt bewusst.
           if [[ -z "${WEBSITE_IMAGE_DIGEST:-}" ]]; then
-            WEBSITE_IMAGE_DIGEST="$(crane digest ghcr.io/paddione/website:latest)"
+            WEBSITE_IMAGE_DIGEST="$(crane digest ghcr.io/gekko32/website:latest)" \
+              || { echo "gekko32/website nicht lesbar: WEBSITE_IMAGE_DIGEST in images.env setzen." >&2; exit 1; }
           fi
           if [[ -z "${BRETT_IMAGE_DIGEST:-}" ]]; then
             BRETT_IMAGE_DIGEST="$(crane digest ghcr.io/gekko32/brett:latest)" \
