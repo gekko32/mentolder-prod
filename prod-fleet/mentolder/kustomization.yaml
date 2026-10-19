@@ -15,6 +15,7 @@ resources:
   - oauth2-proxy-sessions.yaml
   - studio-ingress.yaml
   - brain.yaml
+  - fuehrungsfunk.yaml
 components:
   - ../components/fleet-common
   # D3 (T016529): kein Longhorn mehr — die fruehere llm-models-longhorn-

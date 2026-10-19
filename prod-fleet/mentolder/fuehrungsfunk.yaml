@@ -1,0 +1,126 @@
+# prod-fleet/mentolder/fuehrungsfunk.yaml — Führungsfunk + Audioguide (Gerald, 19.10.2026)
+#
+# Live-Funk für Gruppenführungen (Grenzspaziergang, Frank) unter
+# https://funk.mentolder.de. Image aus github.com/gekko32/fuehrungsfunk.
+# Testbetrieb: immer :latest; nach einem neuen Image auf dem Server
+#   kubectl rollout restart deploy/fuehrungsfunk -n workspace
+# Der SENDE_TOKEN liegt im Secret "fuehrungsfunk", das einmalig von Hand auf
+# dem Server angelegt wurde (nicht in GitHub, siehe Änderungsprotokoll).
+# Kein SSO davor: Hörer kommen per Link/QR-Code ohne Anmeldung; Senden und
+# Verwalten sind über den SENDE_TOKEN geschützt.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fuehrungsfunk-daten
+  namespace: ${WORKSPACE_NAMESPACE}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fuehrungsfunk
+  namespace: ${WORKSPACE_NAMESPACE}
+  labels:
+    app: fuehrungsfunk
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: fuehrungsfunk
+  template:
+    metadata:
+      labels:
+        app: fuehrungsfunk
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: fuehrungsfunk
+          image: ghcr.io/gekko32/fuehrungsfunk:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8090
+          env:
+            - name: PORT
+              value: "8090"
+            - name: SENDE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: fuehrungsfunk
+                  key: SENDE_TOKEN
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: 8090
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: 8090
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: daten
+              mountPath: /app/daten
+      volumes:
+        - name: daten
+          persistentVolumeClaim:
+            claimName: fuehrungsfunk-daten
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fuehrungsfunk
+  namespace: ${WORKSPACE_NAMESPACE}
+spec:
+  selector:
+    app: fuehrungsfunk
+  ports:
+    - name: http
+      port: 8090
+      targetPort: 8090
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: workspace-ingress-fuehrungsfunk
+  namespace: ${WORKSPACE_NAMESPACE}
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: "${WORKSPACE_NAMESPACE}-redirect-https@kubernetescrd,${WORKSPACE_NAMESPACE}-hsts-headers@kubernetescrd,${WORKSPACE_NAMESPACE}-security-headers@kubernetescrd"
+spec:
+  tls:
+    - hosts:
+        - funk.${PROD_DOMAIN}
+      secretName: ${TLS_SECRET_NAME}
+  rules:
+    - host: funk.${PROD_DOMAIN}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: fuehrungsfunk
+                port:
+                  number: 8090
