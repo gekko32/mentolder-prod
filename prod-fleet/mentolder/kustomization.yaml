@@ -431,3 +431,23 @@ patches:
       - op: replace
         path: /spec/redirectRegex/regex
         value: ^https?://(?:www\.)?mentolder\.de(.*)
+
+# Runbook 3.2: Images aus ghcr.io/paddione kommen gespiegelt aus ghcr.io/gekko32
+# (.github/workflows/mirror-images.yml, Liste images-mirror.txt). crane copy erhaelt
+# die Digests, gepinnte @sha256-Referenzen bleiben gueltig. website, brett und
+# fuehrungsfunk sind eigene gekko32-Builds und werden nie gespiegelt.
+images:
+  - name: ghcr.io/paddione/downloads-content
+    newName: ghcr.io/gekko32/downloads-content
+  - name: ghcr.io/paddione/einvoice-sidecar
+    newName: ghcr.io/gekko32/einvoice-sidecar
+  - name: ghcr.io/paddione/mcp-node
+    newName: ghcr.io/gekko32/mcp-node
+  - name: ghcr.io/paddione/mentolder-web
+    newName: ghcr.io/gekko32/mentolder-web
+  - name: ghcr.io/paddione/talk-transcriber
+    newName: ghcr.io/gekko32/talk-transcriber
+  - name: ghcr.io/paddione/workspace-brett
+    newName: ghcr.io/gekko32/brett
+  - name: ghcr.io/paddione/website
+    newName: ghcr.io/gekko32/website

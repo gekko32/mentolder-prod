@@ -1,0 +1,11 @@
+# Runbook 3.2: Images, die aus ghcr.io/paddione nach ghcr.io/gekko32 gespiegelt werden.
+# Format: <name> <tag oder -> [sha256:<digest>]. Abgeleitet aus dem Render (ghcr.io/paddione/*).
+# private=1: Quelle privat, Ziel bleibt privat (Lesen per Repo-Secret PADDIONE_GHCR_READ_TOKEN).
+# NIE eintragen: brett, website, fuehrungsfunk (eigene gekko32-Builds).
+collabora-code 25.04.9.4.1-setcap sha256:4f671c72094acd30e03b29088395449ba6d4b2488ff8a59a92edae13e0b46eb8
+downloads-content latest private=1
+einvoice-sidecar - sha256:f346809b82c625f5f55c7b8be6c5d0be35ccce414015201ceaa293c6ea58156f
+mcp-node latest 
+mentolder-web latest 
+studio-server - sha256:3fb082d01ee1679ccbe75831e7badc66f51fae8995afa5283da03eb4d349e7f3
+talk-transcriber - sha256:350022ca23271d0df6b5a0c33a7fb7a2947c6b195e3bdb6ac6a4b0124e932f0c
