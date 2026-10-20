@@ -749,6 +749,9 @@ nach dem Rebuild.
 ```bash
 hcloud image list --type system | grep -E 'ubuntu-2[46]\.04'
 hcloud server list -o columns=name,ipv4,private_net,status
+# Primaer-IPs stehen auf auto_delete=true (Stand 2026-10-20). Rebuild behaelt sie,
+# ein versehentliches Loeschen eines Servers wuerde sie aber freigeben. Absichern:
+for ip in $(hcloud primary-ip list -o noheader -o columns=id); do hcloud primary-ip update "$ip" --auto-delete=false; done
 for n in gekko-hetzner-2 gekko-hetzner-3 gekko-hetzner-4; do hcloud server rebuild "$n" --image "$OS_IMAGE"; done
 ```
 
@@ -1325,7 +1328,7 @@ möglich.
 
 | Punkt | Wert |
 |---|---|
-| Knoten | `gekko-hetzner-2/3/4`, je 4 vCPU, 8 GB RAM, 75 GB Platte, Ubuntu 24.04.5, k3s `v1.37.1+k3s1`, alle `control-plane,etcd` |
+| Knoten | `gekko-hetzner-2/3/4`, Hetzner `cx33` (Netz `gekko-hetzner-ff`, `192.168.200.0/24`), je 4 vCPU, 8 GB RAM, 75 GB Platte, Ubuntu 24.04.5, k3s `v1.37.1+k3s1`, alle `control-plane,etcd` |
 | Netz | privat `192.168.200.2–4` auf `enp7s0`, Tailnet `100.104.153.88`, `100.124.142.2`, `100.100.238.102` |
 | Plattenplatz frei | 13 / 13 / 27 GB |
 | RAM real belegt | 4,6 / 3,8 / 4,6 Gi |
@@ -1333,4 +1336,5 @@ möglich.
 | Flux | `flux-system` aus `Paddione/Bachelorprojekt` (`flux/clusters/fleet-gekko`), `fleet-manifests` aus `ghcr.io/paddione`; Workloads aus `gekko32/mentolder-prod` (Namespace `gekko-mentolder`) |
 | Secrets | 20 SealedSecrets; ohne SealedSecret: `fuehrungsfunk`, `ntfy-tokens`, `pentest-internal-vault`, `ipv64-api-key`, `ghcr-pull-secret` (workspace), `letsencrypt-prod-key` |
 | Backups | CronJobs `db-backup` (02:00), `pvc-backup` (03:00), `db-restore-verify` (So 03:30), Ziel Filen `/Backup` |
+| Hetzner-Projekt | SSH-Keys `patrick@korczewski.de` und `gekko@mentolder-20260513` (= `gekko_ed25519`) hinterlegt, Image `ubuntu-26.04` verfügbar, keine Hetzner-Firewall, keine Volumes, Rebuild-/Delete-Schutz aus |
 | SSH | Benutzer `gekko` mit `gekko_ed25519` und sudo ohne Passwort auf allen drei Knoten funktionsfähig, Port 22 öffentlich erreichbar |
