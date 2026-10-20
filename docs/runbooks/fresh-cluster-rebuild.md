@@ -146,6 +146,15 @@ install -m644 /mnt/c/Users/PatrickKorczewski/.ssh/gekko_ed25519.pub ~/.ssh/gekko
 ssh-keygen -y -f ~/.ssh/gekko_ed25519 | cut -d' ' -f2 | diff - <(cut -d' ' -f2 ~/.ssh/gekko_ed25519.pub) && echo key-pair-ok
 ```
 
+Liegt der Schlüssel auf diesem Rechner nicht unter dem Pfad oben, aus der
+Handover-Datei übernehmen:
+
+```bash
+jq -r '.items[]|select(.name=="ops/ssh-gekko_ed25519").notes' /mnt/c/<pfad>/mentolder-handover-*.json > ~/.ssh/gekko_ed25519
+jq -r '.items[]|select(.name=="ops/ssh-gekko_ed25519").fields[0].value' /mnt/c/<pfad>/mentolder-handover-*.json > ~/.ssh/gekko_ed25519.pub
+chmod 600 ~/.ssh/gekko_ed25519
+```
+
 ### 0.7 SSH-Konfiguration
 
 `~/.ssh/config` in `gekko-ops` (Modus 600):
@@ -264,17 +273,22 @@ Danach anmelden: `gh auth login` (I4), `hcloud context create gekko` (I1).
 
 ### 1.1 Kubeconfig des Altclusters
 
+Die Altknoten hängen in Patricks Tailnet, der Ausführungsrechner in
+`gekko32@github`. Die API (6443) ist öffentlich gesperrt. Deshalb über einen
+SSH-Tunnel zugreifen (`127.0.0.1` steht im API-Zertifikat):
+
 ```bash
 mkdir -p ~/.kube
 ssh gekko-hetzner-2/gekko 'sudo cat /etc/rancher/k3s/k3s.yaml' \
-  | sed 's#https://127.0.0.1:6443#https://gekko-hetzner-2:6443#' > ~/.kube/fleet-old
+  | sed 's#https://127.0.0.1:6443#https://127.0.0.1:16443#' > ~/.kube/fleet-old
 chmod 600 ~/.kube/fleet-old
+ssh -f -N -o ExitOnForwardFailure=yes -L 16443:127.0.0.1:6443 gekko-hetzner-2/gekko
 export KUBECONFIG=~/.kube/fleet-old
 kubectl get nodes -o wide
 ```
 
-`gekko-hetzner-2` muss über das Tailnet (MagicDNS) auflösen. Sonst die
-Tailnet-IP aus `tailscale status` einsetzen.
+Der Tunnel muss bis Phase 4 einschließlich bestehen. Nach einem Abbruch mit
+demselben `ssh -f -N …` neu öffnen.
 
 ### 1.2 Inventar schreiben
 
