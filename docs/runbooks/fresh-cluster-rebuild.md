@@ -53,14 +53,15 @@ Vor Phase 1 vom Operator erfragen und in `~/mentolder-ops/inputs.env` ablegen
 
 | ID | Name | Beispiel / Hinweis | Geheim |
 |---|---|---|---|
-| I1 | `HCLOUD_TOKEN` | Hetzner-Cloud-Projekt der gekko-Server, Read/Write | ja |
-| I2 | `TS_AUTHKEY` | Tailscale-Auth-Key, reusable, pre-approved, `tag:fleet` | ja |
-| I3 | `VW_URL`, `VW_EMAIL` | Gekkos Vaultwarden-Server und Konto | URL nein |
+| I0 | Handover-Datei | `mentolder-handover-<datum>.json` aus `scripts/handover-export.sh` (siehe [Phase 2.0](#20-handover-datei)). Enthält alle Secrets und I1, I2 und I5 | ja |
+| I1 | `HCLOUD_TOKEN` | Hetzner-Cloud-Projekt der gekko-Server, Read/Write. Nur für `NODE_RESET=rebuild` (siehe I8) | ja |
+| I2 | `TS_AUTHKEY`, `TS_API_KEY` | Tailnet `gekko32@github`. Auth-Key: reusable, **nicht** ephemeral, Tag `tag:fleet` (siehe 5.1) | ja |
+| I3 | `VW_URL`, `VW_EMAIL` | Vaultwarden ist Teil des Deployments und am Anfang nicht verfügbar. Erst in Phase 8 nötig, siehe 7.5 | URL nein |
 | I4 | GitHub-Login `gekko32` | `gh auth login` mit Scopes `repo`, `workflow`, `write:packages`, `read:org` | ja |
-| I5 | `NUC_LOCAL_IP`, `NUC_BOOTSTRAP_USER` | lokale IP und vorhandener Admin-User des NUC | nein |
+| I5 | NUC | Tailnet-IP `100.87.136.73` (Tailnet `gekko32@github`, Proxmox-Host, Kernel `6.8.12-12-pve`), Admin-User für die einmalige Einrichtung von `gekko` | nein |
 | I6 | `NUC_ROLE` | `backup` (empfohlen) oder `agent` (siehe Phase 5.6) | nein |
 | I7 | `OS_IMAGE` | `ubuntu-26.04` (Standard, falls bei Hetzner gelistet), sonst `ubuntu-24.04` | nein |
-| I8 | `NODE_RESET` | `rebuild` (Standard, braucht I1) oder `wipe` (nur k3s entfernen, OS-Upgrade per apt) | nein |
+| I8 | `NODE_RESET` | `rebuild` (Standard, braucht I1) oder `wipe` (nur über die bestehende SSH-Verbindung, kein Hetzner-Zugang nötig, siehe 5.2) | nein |
 | I9 | Wartungsfenster | Datum/Uhrzeit, geschätzt 3 h | nein |
 | I10 | Filen-Zugang | nur falls die nächtlichen Backups als zweite Quelle genutzt werden | ja |
 
@@ -175,8 +176,8 @@ Host gekko-hetzner-4/gekko
     IdentityFile ~/.ssh/gekko_ed25519
 
 Host nuc/gekko
-    # TODO: lokale IP des NUC eintragen (Eingabe I5)
-    HostName NUC_LOCAL_IP
+    # Tailnet-IP (Tailnet gekko32@github); lokale LAN-IP alternativ moeglich
+    HostName 100.87.136.73
     User gekko
     IdentityFile ~/.ssh/gekko_ed25519
 ```
@@ -198,12 +199,16 @@ Verifikation:
 for h in 2 3 4; do ssh gekko-hetzner-$h/gekko 'echo "$(hostname) $(sudo -n true && echo sudo-ok)"'; done
 ```
 
-### 0.8 NUC vorbereiten (falls erreichbar)
+### 0.8 NUC vorbereiten
 
-Mit dem vorhandenen Admin-User (I5) einmalig:
+Der NUC ist ein Proxmox-Host im Tailnet `gekko32@github`. Der Windows-Rechner,
+auf dem dieser Runbook läuft, muss im selben Tailnet angemeldet sein (0.3).
+Proxmox-Hosts haben meist kein `sudo`. Deshalb vorher als root
+`apt-get install -y sudo` ausführen. Mit dem vorhandenen Admin-User (I5)
+einmalig:
 
 ```bash
-ssh -o IdentitiesOnly=no "$NUC_BOOTSTRAP_USER@$NUC_LOCAL_IP" "sudo bash -s" <<EOF
+ssh -o IdentitiesOnly=no "$NUC_BOOTSTRAP_USER@100.87.136.73" "sudo bash -s" <<EOF
 id gekko 2>/dev/null || useradd -m -s /bin/bash -G sudo gekko
 passwd -l gekko
 echo 'gekko ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/90-gekko && chmod 440 /etc/sudoers.d/90-gekko
@@ -310,7 +315,45 @@ Quelle der Wahrheit ist der **laufende Cluster**: Er enthält die entschlüsselt
 Werte aller SealedSecrets und die Secrets, die nie versiegelt wurden. Ein
 git-crypt-Schlüssel ist dafür nicht nötig.
 
-### 2.1 Arbeitsbereich und age-Schlüssel
+### 2.0 Handover-Datei
+
+Da Vaultwarden erst nach dem Neuaufbau wieder läuft, transportiert eine
+JSON-Datei alle Werte zum Ausführungsrechner. Erzeugt wird sie auf einem
+Rechner mit Zugriff auf den Altcluster (Kontext `fleet`):
+
+```bash
+bash scripts/handover-export.sh ~/mentolder-handover-$(date +%F).json
+```
+
+Inhalt (Format `bitwardenjson`, direkt importierbar mit `bw import`):
+
+- `k8s/<namespace>/<name>`: ein Eintrag pro Kubernetes-Secret, Felder = Schlüssel.
+  Werte über 3000 Zeichen stehen in eigenen Einträgen `k8s/<ns>/<name>#<key>`.
+  Binärwerte tragen das Suffix `:base64`.
+- `ops/inputs`: Tailscale-API- und Auth-Key, Hetzner-Token, NUC-IP.
+- `ops/sops-age`: neuer SOPS-Schlüssel (privat und öffentlich).
+- `ops/k3s`: neues k3s-Token.
+- `ops/ssh-gekko_ed25519`: Schlüsselpaar.
+
+Nicht enthalten sind TLS-Secrets (cert-manager stellt neu aus) und von
+Operatoren generierte Secrets. Am 2026-10-20 nutzte der Altcluster alle in den
+Workloads referenzierten Schlüssel ohne Lücke (70 `secretKeyRef`/`envFrom`
+geprüft). Leer war nur `website-secrets:GITHUB_MODELS_TOKEN` (optional).
+
+Auf dem Ausführungsrechner:
+
+```bash
+PLAIN=/run/user/$(id -u)/mentolder-plain; install -d -m700 "$PLAIN"
+mv /mnt/c/<pfad>/mentolder-handover-*.json "$PLAIN/handover.json"
+bash scripts/handover-to-secrets.sh "$PLAIN/handover.json" "$PLAIN/secrets"
+jq -r '.items[]|select(.name=="ops/sops-age").fields[]|select(.name=="SOPS_AGE_KEY").value' "$PLAIN/handover.json" > "$PLAIN/mentolder.agekey"
+jq -r '.items[]|select(.name=="ops/sops-age").fields[]|select(.name=="SOPS_AGE_PUBLIC").value' "$PLAIN/handover.json" > ~/mentolder-ops/age.pub
+```
+
+Damit sind 2.1 und 2.2 erledigt, weiter mit 2.3. Die Originaldatei auf dem
+Transportmedium danach mit `shred -u` vernichten.
+
+### 2.1 Arbeitsbereich und age-Schlüssel (nur ohne Handover-Datei)
 
 ```bash
 PLAIN=/run/user/$(id -u)/mentolder-plain
@@ -325,7 +368,7 @@ passwortgeschützte Kopie:
 `age -p -o ~/mentolder-ops/mentolder.agekey.age "$PLAIN/mentolder.agekey"`
 (Passphrase gibt der Operator ein, sie wird nicht gespeichert).
 
-### 2.2 Secrets exportieren
+### 2.2 Secrets exportieren (nur ohne Handover-Datei)
 
 Umfang: Namespaces `workspace`, `website`, `coturn`, `rustdesk`,
 `workspace-office`, `monitoring`, `cert-manager`, `flux-system`. Ausgeschlossen:
@@ -668,12 +711,36 @@ Operator muss mit „Phase 5 starten“ bestätigen.
 
 ## Phase 5: Knoten neu aufsetzen
 
-### 5.1 Tailnet aufräumen
+### 5.1 Tailnet vorbereiten
 
-Alte Geräte `gekko-hetzner-2/3/4` in der Tailscale-Admin-Konsole entfernen,
-sonst bekommen die Neuinstallationen Namen mit Suffix (`gekko-hetzner-2-1`).
-Das geht erst unmittelbar vor dem Rebuild, weil danach kein Tailnet-Zugriff auf
-den Altcluster mehr besteht.
+Die Knoten hängen heute im Tailnet von Patrick (`p.korczewski@`). Nach dem
+Neuaufbau treten sie dem Tailnet `gekko32@github` bei. Dort liegen auch der NUC
+und Gekkos Windows-Rechner. Patrick braucht danach eine Freigabe
+(Device-Sharing) oder ein eigenes Konto in diesem Tailnet.
+
+Stand 2026-10-20 im Tailnet `gekko32@github`:
+
+- Die Policy definiert keine `tagOwners`. `--advertise-tags=tag:fleet` schlägt
+  deshalb fehl.
+- Der übergebene Auth-Key ist `ephemeral: true` und ohne Tag. Ephemere Geräte
+  verschwinden nach längerer Offline-Zeit aus dem Tailnet. Für Server ist das
+  ungeeignet.
+
+Vorher korrigieren (per API mit `TS_API_KEY` oder in der Admin-Konsole):
+
+1. In der Policy ergänzen: `"tagOwners": {"tag:fleet": ["autogroup:admin"]}`.
+2. Neuen Auth-Key anlegen: reusable, **nicht** ephemeral, pre-approved, Tag
+   `tag:fleet`. Getaggte Geräte haben keinen Key-Ablauf.
+3. Den alten Key `kW8beSCrcC21CNTRL` widerrufen.
+
+```bash
+curl -s -u "$TS_API_KEY:" -X POST https://api.tailscale.com/api/v2/tailnet/-/keys \
+  -H 'Content-Type: application/json' \
+  -d '{"capabilities":{"devices":{"create":{"reusable":true,"ephemeral":false,"preauthorized":true,"tags":["tag:fleet"]}}},"expirySeconds":7776000,"description":"fleet-nodes"}' | jq -r .key
+```
+
+Die alten Einträge `gekko-hetzner-2/3/4` in Patricks Tailnet entfernt Patrick
+nach dem Rebuild.
 
 ### 5.2 OS frisch
 
@@ -692,10 +759,21 @@ Servererstellung. Ob `gekko_ed25519` dazugehört, zeigt
 `hcloud server reset-password <name>`, einmalig per Passwort anmelden und den
 Schlüssel in `/root/.ssh/authorized_keys` eintragen.
 
-**Variante `wipe`** (ohne Hetzner-Zugang): pro Knoten
+**Variante `wipe`** (nur über die bestehende SSH-Verbindung als `gekko`, kein
+Hetzner-Token): pro Knoten
 `sudo /usr/local/bin/k3s-uninstall.sh && sudo rm -rf /var/lib/rancher /etc/rancher`,
-dann `sudo apt-get update && sudo apt-get -y full-upgrade`. Bei Bedarf
-`do-release-upgrade` auf 26.04. Danach weiter mit 5.3.
+dann `sudo apt-get update && sudo apt-get -y full-upgrade` und optional
+`sudo do-release-upgrade` auf 26.04. In 5.3 dann `ssh gekko-hetzner-N/gekko sudo bash -s`
+statt `root@<ip>`. Die Unterschiede zu `rebuild`:
+
+- Kein sauberes OS. Reste wie alte Pakete, das WireGuard-Mesh und Konfigurationen
+  von Hand bleiben liegen.
+- Ein Release-Upgrade auf entfernten Servern kann hängen bleiben.
+- Sperrt eine Firewall-Regel SSH aus, gibt es ohne Hetzner-Zugang keine Rettung
+  (Rescue-System oder Konsole).
+
+Mit Hetzner-Token ist jeder Fehler über die Konsole reparierbar. Deshalb
+bleibt `rebuild` der Standard.
 
 ### 5.3 Grundprovisionierung pro Knoten
 
@@ -757,7 +835,9 @@ Verifikation: `ssh gekko-hetzner-$h/gekko 'sudo -n true && tailscale ip -4 && uf
 
 ```bash
 K3S_VERSION=$(curl -fsSL https://update.k3s.io/v1-release/channels | jq -r '.data[]|select(.id=="stable").latest')
-K3S_TOKEN=$(openssl rand -hex 32); echo "K3S_TOKEN=$K3S_TOKEN" >> "$PLAIN/generated.env"
+# Token aus der Handover-Datei (ops/k3s), sonst neu erzeugen
+K3S_TOKEN=$(jq -r '.items[]|select(.name=="ops/k3s").fields[0].value' "$PLAIN/handover.json" 2>/dev/null || true)
+[ -n "$K3S_TOKEN" ] || { K3S_TOKEN=$(openssl rand -hex 32); echo "K3S_TOKEN=$K3S_TOKEN" >> "$PLAIN/generated.env"; }
 k3s_cfg() {  # $1=name $2=private-ip $3=public-ip $4=init|join
 TSIP=$(ssh "$1/gekko" tailscale ip -4)
 cat <<EOF
@@ -1007,9 +1087,37 @@ aktivierten Dienst `kubectl top pod` nach 15 Minuten Last festhalten.
 
 ---
 
+### 7.5 Vaultwarden (Pflicht vor Phase 8)
+
+Vaultwarden wurde mit T016559 aus fleet entfernt (Delete-Patches in
+`prod-fleet/mentolder/kustomization.yaml`). Die Datenbank `vaultwarden`
+(ca. 11 MB) liegt aber noch in `shared-db` und kommt mit dem Restore aus 6.4
+zurück, samt der Konten darin. Die Secrets `VAULTWARDEN_DB_PASSWORD`,
+`VAULTWARDEN_ADMIN_TOKEN` und `POCKET_ID_VAULTWARDEN_SECRET` sind in
+`workspace-secrets` vorhanden.
+
+Aktivieren per PR: die Delete-Patches für `vaultwarden` (Deployment, Service,
+PVC `vaultwarden-data-pvc`, Ingress `workspace-ingress-vault`, NetworkPolicy,
+Middleware) entfernen. Ressourcen: ca. 50m CPU und 128 Mi RAM, passt auf jeden
+Knoten. Danach `https://vault.mentolder.de` prüfen und mit Gekkos Konto
+anmelden. Existiert kein Konto, eines anlegen (Signups über `ADMIN_TOKEN` unter
+`/admin` erlauben, danach wieder sperren).
+
 ## Phase 8: Vaultwarden, SOPS, Klartext vernichten
 
-Erst nach bestandener Abnahme (Phase 6.7).
+Erst nach bestandener Abnahme (Phase 6.7) und mit laufendem Vaultwarden (7.5).
+
+**Mit Handover-Datei:** statt der Schleife in 8.1 die Datei direkt importieren
+und danach nur die Gegenprobe ausführen:
+
+```bash
+bw import bitwardenjson "$PLAIN/handover.json"
+```
+
+Der Import legt den Ordner `mentolder-prod` an. Dann
+`FOLDER=$(bw list folders | jq -r '.[]|select(.name=="mentolder-prod").id')`
+setzen. Neu erzeugte Werte aus Phase 2.4 und 5.4 zusätzlich als
+`mentolder-prod/generated` anlegen.
 
 ### 8.1 Nach Vaultwarden schreiben
 
