@@ -13,6 +13,7 @@ Operator (Gekko). Ergebnis:
 4. Optionale Dienste (heute `replicas: 0`) sind mit Ressourcenschätzung angeboten.
 5. Alle Klartext-Werte liegen in Gekkos Vaultwarden, im Repo nur verschlüsselt.
 6. Bachelorprojekt ist von mentolder-Deploy-Anteilen bereinigt.
+7. Die Ops-Instanz ist auf Gekkos Laptop übertragen, falls der Runbook woanders lief (Phase 10).
 
 Stand der Ist-Aufnahme: 2026-10-20 (siehe [Anhang A](#anhang-a-ist-aufnahme-2026-10-20)).
 
@@ -1331,6 +1332,91 @@ Nach dem Entfernen müssen die Suiten grün bleiben:
 Draft-PR mit Typ `chore(fleet): …`, Freigabe durch Patrick.
 
 `GATE`: Kandidatenliste und Diff-Statistik vorlegen.
+
+---
+
+## Phase 10: Ops-Instanz an Gekko übergeben
+
+Gilt, wenn der Runbook nicht auf Gekkos Rechner lief (z. B. auf dem PK-Tablet).
+Ziel: `gekko-ops` läuft 1:1 auf Gekkos Laptop (`DESKTOP-5VFUF9Q`), der
+Ausführungsrechner behält nichts Sensibles. Erst nach Phase 8.
+
+### 10.1 Aufräumen in `gekko-ops`
+
+```bash
+# kein Klartext mehr vorhanden (tmpfs wird nicht exportiert, trotzdem pruefen)
+ls /run/user/$(id -u)/mentolder-plain 2>/dev/null && echo "PLAIN noch da, Phase 8.3 nachholen"
+# GitHub-CLI muss als gekko32 angemeldet sein, sonst abmelden
+gh auth status 2>&1 | grep -E 'Logged in to github.com account' || true
+# verschluesselte Backups auf den NUC, nicht mitgeben
+rsync -a ~/mentolder-ops/backup/ nuc/gekko:/srv/mentolder-backup/ && rm -rf ~/mentolder-ops/backup
+# Verlauf leeren (enthaelt Hostnamen und Befehle, idealerweise keine Werte)
+cat /dev/null > ~/.bash_history; history -c
+# Tunnel und Control-Sockets schliessen
+pkill -u "$(id -u)" -f 'ssh -f -N' || true; rm -f ~/.ssh/cm-*
+```
+
+Ist `gh` mit einem anderen Konto als `gekko32` angemeldet: `gh auth logout`.
+Gekko meldet sich nach dem Import selbst an.
+
+`GATE`: Ergebnis vorlegen.
+
+### 10.2 Export (PowerShell auf dem Ausführungsrechner)
+
+```powershell
+wsl --shutdown
+New-Item -ItemType Directory -Force C:\Transfer | Out-Null
+wsl --export gekko-ops C:\Transfer\gekko-ops.tar
+Get-Item C:\Transfer\gekko-ops.tar | Select-Object Name, Length
+```
+
+Das Archiv enthält den privaten SSH-Schlüssel und eine Cluster-Admin-
+Kubeconfig. Nur verschlüsselt transportieren: 7-Zip mit AES-256 und Passwort
+(`7z a -p -mhe=on gekko-ops.7z gekko-ops.tar`) oder ein verschlüsselter
+USB-Stick. Das Passwort auf einem anderen Weg übergeben als das Archiv.
+
+### 10.3 Import auf Gekkos Laptop
+
+Voraussetzungen auf dem Laptop: WSL ≥ 2.4, `.wslconfig` wie in 0.2
+(`networkingMode = Mirrored`), Tailscale angemeldet als `gekko32` (0.3).
+
+```powershell
+New-Item -ItemType Directory -Force C:\WSL\gekko-ops | Out-Null
+wsl --import gekko-ops C:\WSL\gekko-ops C:\Transfer\gekko-ops.tar --version 2
+Remove-Item C:\Transfer\gekko-ops.tar
+wsl -d gekko-ops -- bash -lc 'whoami; sudo -n true && echo sudo-ok; kubectl --kubeconfig ~/.kube/fleet get nodes; for h in 2 3 4; do ssh gekko-hetzner-$h/gekko hostname; done; ssh nuc/gekko hostname'
+```
+
+`/etc/wsl.conf` bringt Default-User `gekko` und systemd mit. Erwartung:
+`gekko`, `sudo-ok`, drei Knoten `Ready`, vier Hostnamen.
+
+Danach auf dem Laptop:
+
+- `gh auth login` als `gekko32`.
+- `bw config server https://vault.mentolder.de && bw login`. Den SOPS-Schlüssel
+  bei Bedarf aus dem Eintrag `ops/sops-age` holen. Er liegt bewusst nicht in der
+  Instanz.
+- Optional Claude Code in `gekko-ops` installieren
+  (`npm i -g @anthropic-ai/claude-code`).
+
+### 10.4 Ausführungsrechner bereinigen
+
+```powershell
+wsl --unregister gekko-ops
+Remove-Item C:\Transfer -Recurse -Force
+```
+
+Zusätzlich:
+
+- Handover-JSON und Transportkopien mit `shred -u` bzw. „Sicher löschen“ entfernen.
+- Den Rechner in der Tailscale-Admin-Konsole aus dem Tailnet `gekko32@github`
+  entfernen oder lokal `tailscale switch` zurück auf das eigene Konto und
+  `tailscale logout` für das Gekko-Konto.
+- Den Eintrag `nuc/gekko` und die `gekko-hetzner-*/gekko`-Einträge in der
+  Windows-SSH-Config behalten oder entfernen, je nachdem, ob der Rechner weiter
+  Zugriff haben soll.
+
+`GATE`: Abschluss bestätigen.
 
 ---
 
