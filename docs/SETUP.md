@@ -40,7 +40,7 @@ JSON
 Danach kann niemand mehr direkt nach `main` pushen, auch gekko32 nicht.
 [`CODEOWNERS`](../.github/CODEOWNERS) verlangt nur für `flux/`,
 `.github/`, `prod-mentolder/`, `prod-fleet/` und `environments/` einen
-Review. PRs, die nur `UPSTREAM_REF`, `images.env` oder Doku ändern,
+Review. PRs, die nur `images.env`, `VENDORED_FROM` oder Doku ändern,
 können ohne Review gemergt werden.
 
 ## 3. Artefakt
