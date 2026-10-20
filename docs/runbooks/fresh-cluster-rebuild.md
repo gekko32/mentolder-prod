@@ -30,6 +30,11 @@ Stand der Ist-Aufnahme: 2026-10-20 (siehe [Anhang A](#anhang-a-ist-aufnahme-2026
 - **Klartext nur in tmpfs.** Arbeitsverzeichnis für Klartext ist
   `$PLAIN=/run/user/$(id -u)/mentolder-plain` (RAM, verschwindet beim WSL-Stopp).
   Persistent nur age-verschlüsselt.
+  WSL stoppt eine Instanz ohne offene Prozesse nach kurzer Zeit, dabei geht
+  tmpfs verloren. Deshalb ab Phase 0.9 einen Keepalive offen halten
+  (`Start-Process -WindowStyle Hidden wsl.exe -ArgumentList '-d','gekko-ops','--','sleep','infinity'`)
+  und die Handover-Datei bis Phase 8 zusätzlich age-verschlüsselt ablegen
+  (`age -p -o ~/mentolder-ops/handover.json.age "$PLAIN/handover.json"`).
 - **Linux-Befehle** laufen in der WSL-Instanz. Von der Windows-Seite aus:
 
   ```bash
@@ -931,6 +936,7 @@ Hand anwenden.
 
 | `NUC_ROLE` | Bedeutung | Bewertung |
 |---|---|---|
+| `dev-node` | lokaler Entwicklungsrechner, kein Clustermitglied, kein Backup-Ziel | Zweitkopie der Backups (4.5) dann auf ein Windows-Laufwerk des Ausführungsrechners (die Dateien sind age-verschlüsselt) und zusätzlich die nächtlichen Filen-Backups prüfen |
 | `backup` (empfohlen) | Off-site-Ziel für Backups (restic oder rsync über SSH/Tailnet), kein Clustermitglied | passt zu ADR-014 (Flannel über das private Hetzner-Netz) |
 | `agent` | k3s-Agent, z. B. für KI-Dienste | Der NUC erreicht `192.168.200.0/24` nicht. Dafür müssten **alle** Knoten auf Flannel über Tailscale umstellen (k3s `vpn-auth: name=tailscale,joinKey=…`), mit höherer Latenz für etcd und Pod-Traffic. Erst nach eigener Entscheidung. |
 
