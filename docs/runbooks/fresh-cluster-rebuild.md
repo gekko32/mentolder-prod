@@ -103,9 +103,37 @@ Mirrored ist nötig, damit `gekko-ops` das Tailnet des Windows-Hosts mitnutzt.
 winget list Tailscale.Tailscale
 ```
 
-Fehlt es: `winget install --id Tailscale.Tailscale -e`, dann im Tray anmelden
-(gleiches Tailnet wie die Knoten). Prüfen: `tailscale status` listet
-`gekko-hetzner-2/3/4`.
+Fehlt es:
+
+```powershell
+winget install --id Tailscale.Tailscale -e --accept-package-agreements --accept-source-agreements
+```
+
+Anmeldung im Tailnet `gekko32@github` über GitHub im Browser:
+
+```powershell
+& "C:\Program Files\Tailscale\tailscale.exe" login --hostname $env:COMPUTERNAME --timeout 5m
+```
+
+Der Befehl gibt eine URL `https://login.tailscale.com/a/…` aus und öffnet sie
+meist selbst. Dann `GATE`: Der Operator meldet sich im Browser mit
+**Sign in with GitHub** als `gekko32` an und bestätigt das Gerät. Ist der
+Rechner schon in einem anderen Tailnet (z. B. dem von Patrick), vorher
+`tailscale switch --list` prüfen. Mit `tailscale login` kommt ein zusätzliches
+Konto dazu, das bestehende bleibt unter `tailscale switch` erhalten.
+
+Prüfen:
+
+```powershell
+& "C:\Program Files\Tailscale\tailscale.exe" status --json | ConvertFrom-Json | Select-Object -ExpandProperty CurrentTailnet
+& "C:\Program Files\Tailscale\tailscale.exe" ping -c 1 nuc
+```
+
+Erwartung: Tailnet `gekko32@github` (bzw. `gekko32.github`), `pong` vom NUC.
+Die Hetzner-Knoten tauchen dort erst nach Phase 5 auf. Bis dahin läuft der
+Zugriff auf sie über die öffentlichen IPs (SSH) und den Tunnel aus 1.1. Durch
+`networkingMode = Mirrored` nutzt `gekko-ops` das Tailnet des Windows-Hosts mit,
+in WSL ist kein eigenes Tailscale nötig.
 
 ### 0.4 Distro anlegen
 
