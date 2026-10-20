@@ -1,8 +1,14 @@
-# Review nur dort, wo eine Aenderung Rechte im Cluster beeinflusst (laeuft als cluster-admin).
-# Alles andere (UPSTREAM_REF, images.env, Doku) braucht keinen Review und kann direkt per PR
+# Review nur dort, wo eine Aenderung Rechte oder Workloads im Cluster beeinflusst (laeuft als cluster-admin).
+# Alles andere (images.env, Doku, VENDORED_FROM) braucht keinen Review und kann direkt per PR
 # gemergt werden. Benoetigt: required_approving_review_count=0, require_code_owner_reviews=true.
 /flux/                    @Paddione @gekko32
 /.github/                 @Paddione @gekko32
+/k3d/                     @Paddione @gekko32
+/prod/                    @Paddione @gekko32
 /prod-mentolder/          @Paddione @gekko32
 /prod-fleet/              @Paddione @gekko32
 /environments/            @Paddione @gekko32
+/scripts/                 @Paddione @gekko32
+/secrets/                 @Paddione @gekko32
+/.sops.yaml               @Paddione @gekko32
+/images-mirror.txt        @Paddione @gekko32
