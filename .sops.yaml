@@ -1,0 +1,6 @@
+# Runbook 3.3: Secrets liegen SOPS/age-verschluesselt unter secrets/<namespace>/<name>.sops.yaml.
+# Privater Schluessel: Vaultwarden (mentolder-prod/sops-age-key) und im Cluster flux-system/sops-age.
+creation_rules:
+  - path_regex: secrets/.*\.sops\.yaml$
+    encrypted_regex: ^(data|stringData)$
+    age: age1v0vcqrwjfqhl3myztyhka4vppgjuu542lml590g9deeps6l7xq7q22qylp

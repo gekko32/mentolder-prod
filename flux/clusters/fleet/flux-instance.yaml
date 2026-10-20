@@ -1,0 +1,40 @@
+# Runbook 3.4: Flux-Einstieg des frischen Clusters. Der Cluster gehoert nur Gekko,
+# die Mandanten-Trennung aus Bachelorprojekt (gekko-mentolder-flux) entfaellt.
+apiVersion: fluxcd.controlplane.io/v1
+kind: FluxInstance
+metadata:
+  name: flux
+  namespace: flux-system
+spec:
+  distribution:
+    version: "2.x"
+    registry: "ghcr.io/fluxcd"
+  components:
+    - source-controller
+    - kustomize-controller
+    - helm-controller
+    - notification-controller
+  cluster:
+    type: kubernetes
+    networkPolicy: true
+    size: medium
+  sync:
+    kind: GitRepository
+    url: https://github.com/gekko32/mentolder-prod.git
+    ref: refs/heads/main
+    path: flux/clusters/fleet
+    interval: 10m
+  kustomize:
+    patches:
+      # Nur signierte Commits: Gekkos GPG-Schluessel und GitHub web-flow
+      # (Merges ueber die Weboberflaeche), Secret flux-system/gekko-mentolder-git-verify.
+      - target:
+          kind: GitRepository
+          name: flux-system
+        patch: |
+          - op: add
+            path: /spec/verify
+            value:
+              mode: HEAD
+              secretRef:
+                name: gekko-mentolder-git-verify
