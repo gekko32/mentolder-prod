@@ -19,7 +19,7 @@ env_vars:
   LEGAL_STREET: "Ludwig-Erhard-Str. 18"
   LEGAL_ZIP: "20459"
   LEGAL_JOBTITLE: "Coach und digitaler Begleiter"
-  LEGAL_UST_ID: "33/023/05100"
+  LEGAL_UST_ID: ""
   LEGAL_WEBSITE: mentolder.de
   WEBSITE_IMAGE: website
   WEBSITE_NAMESPACE: website
