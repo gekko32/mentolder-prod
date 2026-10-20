@@ -1,0 +1,423 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════
+# env-seal.sh — Encrypt plaintext secrets into a SealedSecret
+# ═══════════════════════════════════════════════════════════════════
+# Reads plaintext secrets from environments/.secrets/<name>.yaml,
+# builds a temporary K8s Secret, and encrypts it with kubeseal.
+#
+# Usage:
+#   env-seal.sh --env <name> [--env-dir <path>]
+#
+# Output:
+#   environments/sealed-secrets/<name>.yaml
+# ═══════════════════════════════════════════════════════════════════
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ── Globals ──────────────────────────────────────────────────────
+ENV_NAME=""
+ENV_DIR="environments"
+FORCE=false
+_TEST_SCAN_FILE=""
+_TEST_DUP_FILE=""
+_TEST_COMPLETENESS_FILE=""
+_TEST_SCHEMA_FILE=""
+_TEST_COMPLETENESS_ENV_FILE=""
+REUSE_CERT=false; _TEST_CERT_A=""; _TEST_CERT_B=""
+# Shared namespaces (T001404): SealedSecret documents targeting these
+# namespaces are emitted by env-seal only for the brand listed in the
+# schema's `owner_brand` field. Source of truth for the
+# `task workspace:deploy` defence-in-depth filter and the regression
+# test in tests/py/spec/native_ported/spec/test_workspace_deploy_secrets_scope.py.
+SHARED_NAMESPACES=("rustdesk" "coturn")
+export SHARED_NAMESPACES
+# ── Helpers ──────────────────────────────────────────────────────
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+info() {
+  echo "INFO: $*"
+}
+usage() {
+  echo "Usage: $(basename "$0") --env <name> [--env-dir <path>]"
+  exit 1
+}
+# ── Dev-value scanner ────────────────────────────────────────────
+scan_for_dev_values() {
+  local secrets_file="$1"
+  local schema_file="${2:-}"
+  local bad_keys=()
+
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// /}" ]] && continue
+    if [[ "$line" =~ ^([A-Za-z0-9_]+):[[:space:]]*(.*)$ ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+      value="${value%\"}"
+      value="${value%\'}"
+      value="${value#\"}"
+      value="${value#\'}"
+      value="${value// /}"
+
+      local is_bad=false
+
+      # dev-prefixed values (original check)
+      [[ "$value" =~ ^dev[a-zA-Z0-9_] ]] && is_bad=true
+
+      # _dev_placeholder or _placeholder suffix
+      [[ "$value" == *"_dev_placeholder"* ]] && is_bad=true
+      [[ "$value" == *"_placeholder" ]] && is_bad=true
+
+      # Explicit stub values
+      [[ "$value" == "not-configured" ]] && is_bad=true
+      [[ "$value" == "MANAGED_EXTERNALLY" ]] && is_bad=true
+
+      # Empty values are rejected — UNLESS the schema explicitly marks this key
+      # required: false (e.g. BRAINSTORM_OIDC_SECRET is dev-only, intentionally
+      # blank in prod). Without a schema we can't tell, so fail closed.
+      if [[ -z "$value" ]]; then
+        local required="true"
+        if [[ -n "$schema_file" && -f "$schema_file" ]]; then
+          local schema_required
+          schema_required=$(schema_field "$schema_file" "secrets" "$key" "required")
+          [[ "$schema_required" == "false" ]] && required="false"
+        fi
+        [[ "$required" == "true" ]] && is_bad=true
+      fi
+      $is_bad && bad_keys+=("$key")
+    fi
+  done < "$secrets_file"
+  if [[ ${#bad_keys[@]} -gt 0 ]]; then
+    echo "WARNING: The following secrets appear to contain dev placeholder values:"
+    for k in "${bad_keys[@]}"; do
+      echo "  ${k}"
+    done
+    echo ""
+    if [[ "$FORCE" == "true" ]]; then
+      echo "WARNING: --force specified, proceeding anyway."
+      return 0
+    fi
+    echo "ERROR: Refusing to seal dev placeholder values."
+    echo "Fix the values in ${secrets_file} or re-run with --force to override."
+    return 1
+  fi
+  return 0
+}
+# ── Duplicate key checker ─────────────────────────────────────────
+check_duplicate_keys() {
+  local secrets_file="$1"
+  [[ ! -f "$secrets_file" ]] && { echo "ERROR: File not found: ${secrets_file}"; return 1; }
+  local duplicates=()
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    duplicates+=("$key")
+  done < <(
+    grep -E '^[A-Za-z0-9_]+:' "$secrets_file" \
+      | sed 's/:.*//' \
+      | sort \
+      | uniq -d
+  )
+  if [[ ${#duplicates[@]} -gt 0 ]]; then
+    # Duplicate keys are always an error — unlike placeholder values, there is no
+    # valid reason to force-seal a structurally broken secrets file. Fix by removing
+    # the duplicate entries; the last value silently wins in YAML.
+    echo "ERROR: Duplicate keys found in ${secrets_file}:"
+    for k in "${duplicates[@]}"; do
+      echo "  ${k}"
+    done
+    echo "Remove duplicate entries — the last value silently wins in YAML."
+    return 1
+  fi
+  return 0
+}
+# schema_keys <file> <section> — extract all "name:" values under a section
+schema_keys() {
+  local file="$1" section="$2"
+  awk -v sect="$section" '
+    /^[a-z_]+:/ { in_sect = ($0 ~ "^" sect ":"); next }
+    in_sect && /^[[:space:]]*- name:/ {
+      sub(/^[[:space:]]*- name:[[:space:]]*/, "")
+      gsub(/"/, "")
+      print
+    }
+  ' "$file"
+}
+# schema_field <file> <section> <key> <field> — get a field for a specific key
+schema_field() {
+  local file="$1" section="$2" key="$3" field="$4"
+  awk -v sect="$section" -v keyname="$key" -v fname="$field" '
+    /^[a-z_]+:/ { in_sect = ($0 ~ "^" sect ":"); next }
+    in_sect && /^[[:space:]]*- name:/ {
+      sub(/^[[:space:]]*- name:[[:space:]]*/, "")
+      gsub(/"/, "")
+      current_key = $0
+      next
+    }
+    in_sect && current_key == keyname && $0 ~ "^[[:space:]]+" fname ":" {
+      val = $0
+      sub(/^[^:]*:[[:space:]]*/, "", val)
+      gsub(/"/, "", val)
+      print val
+      exit
+    }
+  ' "$file"
+}
+
+# yaml_get <file> <key> — extract value for a top-level key
+yaml_get() {
+  local file="$1" key="$2"
+  local line
+  line=$(grep -E "^[[:space:]]*${key}:" "$file" 2>/dev/null | head -1) || true
+  if [[ -z "$line" ]]; then
+    return 0
+  fi
+  echo "$line" \
+    | sed 's/^[^:]*:[[:space:]]*//' \
+    | sed 's/^["'"'"']//' \
+    | sed 's/["'"'"']$//' \
+    | sed 's/[[:space:]]*$//'
+}
+
+# ── Schema completeness checker ──────────────────────────────────
+
+check_schema_completeness() {
+  local secrets_file="$1"
+  local schema_file="$2"
+  local env_file="${3:-}"
+  local missing=()
+
+  [[ ! -f "$schema_file" ]] && { echo "ERROR: Schema file not found: ${schema_file}"; return 1; }
+
+  # Check all required secrets keys
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    local required
+    required=$(schema_field "$schema_file" "secrets" "$key" "required")
+    [[ "$required" != "true" ]] && continue
+
+    if ! grep -qE "^${key}:" "$secrets_file"; then
+      missing+=("${key} (secrets)")
+    fi
+  done < <(schema_keys "$schema_file" "secrets")
+
+  # Check setup_vars marked sealed: true
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    local sealed
+    sealed=$(schema_field "$schema_file" "setup_vars" "$key" "sealed")
+    [[ "$sealed" != "true" ]] && continue
+
+    # Only require in .secrets if the env file marks it SEALED (or no env file)
+    if [[ -n "$env_file" && -f "$env_file" ]]; then
+      local env_val
+      env_val=$(yaml_get "$env_file" "$key")
+      [[ "$env_val" != "SEALED" ]] && continue
+    fi
+
+    if ! grep -qE "^${key}:" "$secrets_file"; then
+      missing+=("${key} (setup_vars, sealed: true)")
+    fi
+  done < <(schema_keys "$schema_file" "setup_vars")
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "ERROR: The following required keys are missing from ${secrets_file}:"
+    for k in "${missing[@]}"; do
+      echo "  ${k}"
+    done
+    echo ""
+    echo "Add the missing values to ${secrets_file} before sealing."
+    return 1
+  fi
+  return 0
+}
+
+# ── Parse Arguments ──────────────────────────────────────────────
+
+[[ $# -eq 0 ]] && usage
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env)              ENV_NAME="$2"; shift 2 ;;
+    --env-dir)          ENV_DIR="$2"; shift 2 ;;
+    --force)            FORCE=true; shift ;;
+    --_test-dev-scan)        _TEST_SCAN_FILE="$2"; shift 2 ;;
+    --_test-dup-check)       _TEST_DUP_FILE="$2"; shift 2 ;;
+    --_test-completeness)    _TEST_COMPLETENESS_FILE="$2"; shift 2 ;;
+    --_test-schema)          _TEST_SCHEMA_FILE="$2"; shift 2 ;;
+    --_test-env-file)        _TEST_COMPLETENESS_ENV_FILE="$2"; shift 2 ;;
+    --reuse-cert)            REUSE_CERT=true; shift ;;
+    --_test-cert-compare)    _TEST_CERT_A="$2"; _TEST_CERT_B="$3"; shift 3 ;;
+    *)                  echo "Unknown option: $1"; usage ;;
+  esac
+done
+
+# ── Test-mode: only run the dev-value scan ───────────────────────
+
+if [[ -n "$_TEST_SCAN_FILE" ]]; then
+  if scan_for_dev_values "$_TEST_SCAN_FILE" "$_TEST_SCHEMA_FILE"; then
+    echo "OK: no dev placeholder values found"
+    exit 0
+  else
+    exit 1
+  fi
+fi
+
+if [[ -n "$_TEST_DUP_FILE" ]]; then
+  if check_duplicate_keys "$_TEST_DUP_FILE"; then
+    echo "OK: no duplicate keys found"
+    exit 0
+  else
+    exit 1
+  fi
+fi
+
+if [[ -n "$_TEST_COMPLETENESS_FILE" ]]; then
+  if check_schema_completeness "$_TEST_COMPLETENESS_FILE" "$_TEST_SCHEMA_FILE" "$_TEST_COMPLETENESS_ENV_FILE"; then
+    echo "OK: all required schema keys present"
+    exit 0
+  else
+    exit 1
+  fi
+fi
+
+if [[ -n "$_TEST_CERT_A" ]]; then
+  if [[ "$(sha256sum < "$_TEST_CERT_A" | cut -d' ' -f1)" == "$(sha256sum < "$_TEST_CERT_B" | cut -d' ' -f1)" ]]; then
+    echo "OK: certs match"; exit 0
+  else
+    echo "DRIFT: certs differ"; exit 1
+  fi
+fi
+
+[[ -z "$ENV_NAME" ]] && die "--env <name> is required"
+
+# T900789: an env may seal from another env's secrets (secrets_env, e.g.
+# mentolder -> fleet-mentolder); then everything runs as that env.
+# shellcheck source=scripts/lib/secrets-env.sh
+source "${SCRIPT_DIR}/lib/secrets-env.sh"
+SECRETS_ENV=$(secrets_env_for "$ENV_NAME" "$ENV_DIR") || die "secrets_env lookup failed for ${ENV_NAME}"
+if [[ "$SECRETS_ENV" != "$ENV_NAME" ]]; then
+  info "${ENV_NAME} declares secrets_env=${SECRETS_ENV} — sealing ${SECRETS_ENV}"
+  ENV_NAME="$SECRETS_ENV"
+fi
+
+ENV_FILE="${ENV_DIR}/${ENV_NAME}.yaml"
+SECRETS_FILE="${ENV_DIR}/.secrets/${SECRETS_ENV}.yaml"
+SCHEMA="${ENV_DIR}/schema.yaml"
+CERTS_DIR="${ENV_DIR}/certs"
+CERT_FILE="${CERTS_DIR}/${SECRETS_ENV}.pem"
+SEALED_DIR="${ENV_DIR}/sealed-secrets"
+OUTPUT="${SEALED_DIR}/${SECRETS_ENV}.yaml"
+
+# ── Validate inputs ─────────────────────────────────────────────
+
+[[ ! -f "$ENV_FILE" ]] && die "Environment file not found: ${ENV_FILE}"
+[[ ! -f "$SECRETS_FILE" ]] && die "Plaintext secrets not found: ${SECRETS_FILE} — run 'task env:generate ENV=${ENV_NAME}' first"
+
+command -v kubeseal > /dev/null || die "kubeseal not found. Install: https://github.com/bitnami/sealed-secrets#kubeseal"
+
+# ── Read kubectl context from environment file ───────────────────
+
+CONTEXT=$(yaml_get "$ENV_FILE" "context")
+[[ -z "$CONTEXT" ]] && die "No 'context' found in ${ENV_FILE}"
+
+# ── Derive workspace and website namespaces ───────────────────────────────────
+WORKSPACE_NS=$(yaml_get "$ENV_FILE" "workspace_namespace")
+WORKSPACE_NS="${WORKSPACE_NS:-workspace}"
+
+WEBSITE_NS=$(yaml_get "$ENV_FILE" "website_namespace")
+WEBSITE_NS="${WEBSITE_NS:-website}"
+
+info "Using kubectl context: ${CONTEXT}"
+
+# ── Fetch sealing certificate if missing ─────────────────────────
+
+mkdir -p "$CERTS_DIR"
+
+if [[ ! -f "$CERT_FILE" ]]; then
+  info "Fetching sealing certificate from cluster..."
+  kubeseal --controller-name=sealed-secrets \
+           --controller-namespace=sealed-secrets \
+           --context "$CONTEXT" \
+           --fetch-cert > "$CERT_FILE" \
+    || die "Failed to fetch sealing certificate. Is sealed-secrets installed in the cluster?"
+  info "Certificate saved to: ${CERT_FILE}"
+else
+  info "Using existing certificate: ${CERT_FILE}"
+  if [[ "$REUSE_CERT" != "true" ]]; then
+    LIVE_CERT=$(mktemp)
+    if kubeseal --controller-name=sealed-secrets --controller-namespace=sealed-secrets --context "$CONTEXT" --fetch-cert > "$LIVE_CERT" 2>/dev/null && [[ -s "$LIVE_CERT" ]]; then
+      if [[ "$(sha256sum < "$CERT_FILE" | cut -d' ' -f1)" != "$(sha256sum < "$LIVE_CERT" | cut -d' ' -f1)" ]]; then
+        rm -f "$LIVE_CERT"
+        die "Sealing cert drift: ${CERT_FILE} != live cluster cert (context ${CONTEXT}). The controller keypair rotated. Run 'task env:fetch-cert ENV=${ENV_NAME}' then re-seal, or pass --reuse-cert to seal against the cached cert anyway."
+      fi
+      info "Cert fingerprint matches live cluster."
+    else
+      echo "WARN: Cluster nicht erreichbar — Cert-Fingerprint NICHT verifiziert; reuse von ${CERT_FILE}." >&2
+    fi
+    rm -f "$LIVE_CERT"
+  fi
+fi
+
+# ── Scan for dev placeholder values ─────────────────────────────
+
+info "Scanning secrets for dev placeholder values..."
+if ! scan_for_dev_values "$SECRETS_FILE" "$SCHEMA"; then
+  exit 1
+fi
+info "No dev placeholder values detected."
+
+info "Checking for duplicate keys..."
+if ! check_duplicate_keys "$SECRETS_FILE"; then
+  exit 1
+fi
+info "No duplicate keys detected."
+
+info "Checking schema completeness..."
+if [[ -f "$SCHEMA" ]]; then
+  if ! check_schema_completeness "$SECRETS_FILE" "$SCHEMA" "$ENV_FILE"; then
+    exit 1
+  fi
+  info "Schema completeness verified."
+else
+  info "No schema file found at ${SCHEMA}, skipping completeness check."
+fi
+# ── Build temporary K8s Secret manifest ──────────────────────────
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+SECRET_MANIFEST="${TMPDIR}/secret.yaml"
+{
+  echo "apiVersion: v1"
+  echo "kind: Secret"
+  echo "metadata:"
+  echo "  name: workspace-secrets"
+  echo "  namespace: ${WORKSPACE_NS}"
+  echo "type: Opaque"
+  echo "stringData:"
+
+  # YAML-Parsing via Helper (T901721): Zeilen-Parsing kappte mehrzeilige
+  # Values still auf Zeile 1. Einzeiler byte-identisch, Mehrzeiler korrekt.
+  command -v python3 >/dev/null 2>&1 \
+    || die "python3 fehlt — Sealer braucht es seit T901721 (YAML-Parsing)"
+  python3 "${SCRIPT_DIR}/lib/parse-secrets-yaml.py" dump-stringdata "$SECRETS_FILE" \
+    || die "secrets-YAML unlesbar: $SECRETS_FILE"
+} > "$SECRET_MANIFEST"
+# ── Seal the secret ──────────────────────────────────────────────
+mkdir -p "$SEALED_DIR"
+info "Encrypting workspace-secrets with kubeseal..."
+kubeseal --cert "$CERT_FILE" \
+         --format yaml \
+         < "$SECRET_MANIFEST" \
+         > "$OUTPUT" \
+  || die "kubeseal encryption failed"
+
+# ── Seal extra-namespace secrets (extra_namespaces in schema) ────
+# Implementation moved to scripts/lib/seal-extra-namespaces.sh
+# (T001198, G-CD01 root-cause). Sourced here as a library.
+# shellcheck source=scripts/lib/seal-extra-namespaces.sh
+source "${SCRIPT_DIR}/lib/seal-extra-namespaces.sh"
+
+seal_extra_namespace_secrets "$SCHEMA" "$SECRETS_FILE" "$CERT_FILE" "$OUTPUT"
+
+info "SealedSecret written to: ${OUTPUT}"
+info "This file is safe to commit to git."

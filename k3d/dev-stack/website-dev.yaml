@@ -1,0 +1,121 @@
+# ════════════════════════════════════════════════════════════════════
+# website-dev — minimal Astro website inside the dev k3d cluster.
+# Many optional secrets (Stripe, DocuSeal, Nextcloud admin) are NOT
+# wired here — they're consumed via `optional: true` references; the
+# dev image will boot and serve the public-facing pages. Coaching/
+# admin paths that hit those services will fail gracefully.
+# ════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: website-dev-config
+data:
+  NODE_ENV: production
+  BRAND: mentolder
+  BRAND_ID: mentolder
+  PROD_DOMAIN: ${DEV_DOMAIN}
+  WEBSITE_SITE_URL: "https://${DEV_WEBSITE_HOST}"
+  WEBSITE_HOST: ${DEV_WEBSITE_HOST}
+  POCKET_ID_FRONTEND_URL: "https://auth.${PROD_DOMAIN}"
+  CONTACT_EMAIL: ${CONTACT_EMAIL}
+  # T016562: lokale Embeddings (bge-m3 via Gateway) — Voyage ist entfernt.
+  LLM_ENABLED: "true"
+  LLM_EMBED_URL: "http://llm-gateway-embed.workspace.svc.cluster.local:8081"
+  LLM_RERANK_ENABLED: "false"
+  # T016560: Vektor-Suche (Codesearch + Knowledge) nur in Dev bedienen.
+  VECTOR_DB_ENABLED: "1"
+  DB_HOST: shared-db-dev
+  DB_PORT: "5432"
+  DB_NAME: website
+  DB_USER: website
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: website
+  labels:
+    app: website
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: website
+  template:
+    metadata:
+      labels:
+        app: website
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: website
+          image: ghcr.io/paddione/website:dev
+          imagePullPolicy: Always
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          ports:
+            - containerPort: 4321
+          envFrom:
+            - configMapRef:
+                name: website-dev-config
+          env:
+            - name: WEBSITE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shared-db-dev-secrets
+                  key: DEV_WEBSITE_DB_PASSWORD
+            - name: SESSIONS_DATABASE_URL
+              value: "postgresql://website:$(WEBSITE_DB_PASSWORD)@shared-db-dev.workspace-dev.svc.cluster.local:5432/website"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 4321
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 512Mi
+              cpu: 500m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: website
+spec:
+  selector:
+    app: website
+  ports:
+    - port: 80
+      targetPort: 4321
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: website-dev
+spec:
+  rules:
+    - host: ${DEV_WEBSITE_HOST}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: website
+                port:
+                  number: 80

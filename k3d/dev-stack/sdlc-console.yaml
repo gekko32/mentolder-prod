@@ -1,0 +1,146 @@
+# k3d/dev-stack/sdlc-console.yaml [T016429]
+# Fleet-Heimat der SDLC-Console (Umzug aus dem lokalen k3d/sdlc-stack, ADR-007).
+# Anpassungen gegenüber dem alten Stand:
+#   * DB: shared-db-dev statt prod-shared-db (Dev-Stack-Konvention wie brett-dev)
+#   * LLM: bewusst deaktiviert (fail-closed) bis P0-Spike C
+#     (Fleet→Windows:1919 über wg/NAT, Runbook docs/windows-dev-setup.md) grün ist.
+#     Der Bridge-IP-Endpoints-Hack des alten lokalen Stacks wird damit nicht übernommen.
+#   * Secrets: Platzhalter-Patch sdlc-console-secrets.yaml (bewusst unbrauchbar,
+#     Muster sdlc-secrets-patch.yaml) — echte Werte folgen mit dem Spike.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sdlc-console-config
+  labels:
+    app: sdlc-console
+data:
+  BRAND_ID: "mentolder"
+  BRAND: "mentolder"
+  CLUSTER_ENV: "fleet-dev"
+  PINO_LOG_LEVEL: "info"
+  SITE_URL: "${SDLC_CONSOLE_SITE_URL}"
+  POCKET_ID_FRONTEND_URL: "${SDLC_CONSOLE_POCKET_ID_FRONTEND_URL}"
+  POCKET_ID_URL: "${SDLC_CONSOLE_POCKET_ID_URL}"
+  POCKET_ID_CLIENT_ID: "${SDLC_CONSOLE_POCKET_ID_CLIENT_ID}"
+  POCKET_ID_FALLBACK_FRONTEND_URL: "${POCKET_ID_FALLBACK_FRONTEND_URL}"
+  POCKET_ID_FALLBACK_URL: "${POCKET_ID_FALLBACK_URL}"
+  PORTAL_ADMIN_USERNAME: "gekko,paddione,quamain,test-admin,tina-merlin@web.de"
+  # Fail-closed [T016429]: LLM bleibt aus, bis der Fleet→Windows-Routen-Spike
+  # einen erreichbaren Endpoint liefert. Die Console startet und bedient alles
+  # Nicht-LLM ohne Crash.
+  LLM_ENABLED: "false"
+  LLM_RERANK_ENABLED: "false"
+  # In-cluster bge-Gateways (ns workspace) — nutzbar sobald T016430 gemerged
+  # ist und die Flags oben auf true gehen.
+  LLM_EMBED_URL: "http://llm-gateway-embed.workspace.svc.cluster.local:8081"
+  LLM_RERANKER_URL: "http://llm-gateway-rerank.workspace.svc.cluster.local:8081"
+  LLM_EMBED_MODEL: "bge-m3"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sdlc-console
+  labels:
+    app: sdlc-console
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: sdlc-console
+  template:
+    metadata:
+      labels:
+        app: sdlc-console
+    spec:
+      serviceAccountName: sdlc-console
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      containers:
+        - name: sdlc-console
+          image: ghcr.io/paddione/website-sdlc:latest
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          envFrom:
+            - configMapRef:
+                name: sdlc-console-config
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          env:
+            - name: PORT
+              value: "4321"
+            - name: SESSIONS_DATABASE_URL
+              value: "postgresql://website:$(WEBSITE_DB_PASSWORD)@shared-db-dev:5432/website"
+            - name: WEBSITE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shared-db-dev-secrets
+                  key: DEV_WEBSITE_DB_PASSWORD
+            - name: POCKET_ID_WEBSITE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sdlc-console-placeholders
+                  key: POCKET_ID_WEBSITE_SECRET
+            - name: CRON_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sdlc-console-placeholders
+                  key: CRON_SECRET
+            - name: GITHUB_PAT
+              valueFrom:
+                secretKeyRef:
+                  name: sdlc-console-placeholders
+                  key: GITHUB_PAT
+          ports:
+            - name: http
+              containerPort: 4321
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 4321
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 4321
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sdlc-console
+  labels:
+    app: sdlc-console
+spec:
+  selector:
+    app: sdlc-console
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 4321

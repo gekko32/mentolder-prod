@@ -1,0 +1,177 @@
+# ─── Workspace Dev-Ingress ──────────────────────────────────────────
+# DEV-ONLY (*.localhost). Production overlays (prod/, prod-mentolder/,
+# prod-korczewski/) drop these via `$patch: delete` and substitute the
+# real-domain ingresses defined in `prod/ingress.yaml`. Do NOT
+# `kubectl apply -f k3d/ingress.yaml` against a prod cluster — always
+# go through `task workspace:deploy ENV=<env>` / kustomize.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: workspace-ingress
+  labels:
+    app: traefik
+spec:
+  rules:
+    - host: auth.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: pocket-id
+                port:
+                  number: 1411
+
+    # ── Nextcloud (Dateien) ──────────────────────────────────────────
+    - host: files.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nextcloud
+                port:
+                  number: 80
+    - host: board.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: whiteboard
+                port:
+                  number: 3002
+    - host: meet.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: spreed-signaling
+                port:
+                  number: 8080
+    - host: signaling.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: spreed-signaling
+                port:
+                  number: 8080
+    - host: vault.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vaultwarden
+                port:
+                  number: 80
+    - host: react.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mentolder-web
+                port:
+                  number: 80
+---
+
+# ─── Interne Tools (Docs, Brett — oauth2-proxy-protected) ────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: workspace-ingress-internal
+  labels:
+    app: traefik
+spec:
+  rules:
+    - host: downloads.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: oauth2-proxy-downloads
+                port:
+                  number: 4180
+    - host: brett.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: oauth2-proxy-brett
+                port:
+                  number: 4180
+    - host: comfy.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: oauth2-proxy-comfy
+                port:
+                  number: 4180
+    - host: mediaviewer.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: oauth2-proxy-mediaviewer
+                port:
+                  number: 4180
+    - host: videovault.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: oauth2-proxy-videovault
+                port:
+                  number: 4180
+    - host: studio.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: oauth2-proxy-studio
+                port:
+                  number: 4180
+    - host: remote.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: oauth2-proxy-rustdesk-web
+                port:
+                  number: 4180
+    - host: terminal.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: oauth2-proxy-terminal
+                port:
+                  number: 4180

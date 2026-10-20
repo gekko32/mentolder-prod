@@ -1,0 +1,75 @@
+# Slim kube-prometheus-stack values for the k3d dev cluster.
+# No Longhorn (local-path), short retention, local Grafana auth, no Pushover.
+fullnameOverride: monitoring
+
+defaultRules:
+  create: false  # we ship our own PrometheusRule (prometheus-rules.yaml)
+
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 1Gi
+    resources:
+      requests: { cpu: 25m, memory: 64Mi }
+      limits:   { cpu: 100m, memory: 128Mi }
+    # Pushover disabled in dev — AlertmanagerConfig CR is applied but the
+    # secret holds placeholder values, so notifications are dry-run no-ops.
+
+prometheus:
+  prometheusSpec:
+    retention: 24h
+    # Discover PrometheusRule + ServiceMonitor across all namespaces (not just
+    # the ones with the release label), so our CRs in `monitoring` are picked up.
+    ruleSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 5Gi
+    resources:
+      requests: { cpu: 125m, memory: 512Mi }
+      limits:   { cpu: 500m, memory: 1Gi }
+
+grafana:
+  adminPassword: admin  # dev only — prod uses OIDC + GRAFANA_ADMIN_PASSWORD secret
+  # Recreate statt des Chart-Defaults RollingUpdate: Grafana mountet einen
+  # ReadWriteOnce-PVC, bei dem der alte Pod das Volume haelt. [T900034]
+  deploymentStrategy:
+    type: Recreate
+  persistence:
+    enabled: true
+    storageClassName: local-path
+    size: 1Gi
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      searchNamespace: monitoring
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits:   { cpu: 250m, memory: 256Mi }
+
+prometheus-node-exporter:
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits:   { cpu: 200m, memory: 128Mi }
+prometheusOperator:
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits:   { cpu: 250m, memory: 256Mi }
+kube-state-metrics:
+  enabled: true
+  resources:
+    requests: { cpu: 15m, memory: 64Mi }
+    limits:   { cpu: 200m, memory: 256Mi }

@@ -1,5 +1,6 @@
 name: Render mentolder artifact
-# Rendert nur die mentolder-Komponenten auf Basis von Paddione/Bachelorprojekt (UPSTREAM_REF),
+# Rendert alle mentolder-Komponenten (platform, coturn, office, rustdesk, mentolder,
+# website-mentolder) aus dem eigenen Baum (Basen vendored, siehe VENDORED_FROM) und
 # pusht ein signiertes OCI-Artefakt nach ghcr.io/gekko32/mentolder-manifests.
 on:
   workflow_dispatch:
@@ -31,25 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          path: overlay
           fetch-tags: false
-
-      - name: Check out upstream at pinned revision
-        run: |
-          set -euo pipefail
-          ref="$(tr -d '[:space:]' < overlay/UPSTREAM_REF)"
-          git clone --quiet https://github.com/Paddione/Bachelorprojekt.git upstream
-          git -C upstream checkout --quiet "$ref"
-
-      - name: Apply overlay on upstream
-        run: |
-          set -euo pipefail
-          for p in prod-mentolder prod-fleet/mentolder prod-fleet/website-mentolder \
-                   environments/mentolder.yaml environments/fleet-mentolder.yaml; do
-            mkdir -p "upstream/$(dirname "$p")"
-            rm -rf "upstream/$p"
-            cp -r "overlay/$p" "upstream/$p"
-          done
 
       - name: Install kustomize, flux CLI, crane, cosign
         run: |
@@ -79,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           # shellcheck disable=SC1091
-          source overlay/images.env
+          source images.env
           # Leer = aktuelles :latest. Ein gesetzter Wert in images.env pinnt bewusst.
           if [[ -z "${WEBSITE_IMAGE_DIGEST:-}" ]]; then
             WEBSITE_IMAGE_DIGEST="$(crane digest ghcr.io/gekko32/website:latest)" \
@@ -105,26 +88,33 @@ jobs:
 
       - name: Render mentolder components
         if: steps.digests.outputs.skip != 'true'
-        working-directory: upstream
         env:
           CI: "true"
         run: |
           set -euo pipefail
           bash scripts/ci-dummy-secrets.sh
-          bash scripts/flux-render-artifact.sh --out ../out \
-            --only mentolder,website-mentolder
+          bash scripts/flux-render-artifact.sh --out ./out
 
       - name: Push and sign OCI artifact
         if: steps.digests.outputs.skip != 'true'
         id: push
         run: |
           set -euo pipefail
-          OUT="$(flux push artifact "oci://${ARTIFACT}:latest" \
+          # Nur main schreibt :latest (das liest Flux). Testlaeufe auf Branches
+          # pushen unter branch-<name> und lassen das laufende Artefakt unberuehrt.
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            base="latest"
+          else
+            base="branch-$(printf '%s' "${GITHUB_REF_NAME}" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-100)"
+          fi
+          OUT="$(flux push artifact "oci://${ARTIFACT}:${base}" \
             --path=./out \
             --source="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --revision="${GITHUB_REF_NAME}@sha1:${GITHUB_SHA}" \
             --output json)"
           digest="$(printf '%s' "$OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
-          flux tag artifact "oci://${ARTIFACT}:latest" --tag "sha-${GITHUB_SHA}"
-          flux tag artifact "oci://${ARTIFACT}:latest" --tag "${{ steps.digests.outputs.tag }}"
+          flux tag artifact "oci://${ARTIFACT}:${base}" --tag "sha-${GITHUB_SHA}"
+          if [[ "$base" == "latest" ]]; then
+            flux tag artifact "oci://${ARTIFACT}:latest" --tag "${{ steps.digests.outputs.tag }}"
+          fi
           cosign sign --yes "${ARTIFACT}@${digest}"

@@ -1,0 +1,170 @@
+# ═══════════════════════════════════════════════════════════════════
+# Vaultwarden — self-hosted Bitwarden-compatible password manager
+# SSO via Pocket ID OIDC; database on shared PostgreSQL
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vaultwarden-data-pvc
+  labels:
+    app: vaultwarden
+spec:
+  storageClassName: local-path
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vaultwarden
+  labels:
+    app: vaultwarden
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vaultwarden
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: vaultwarden
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-db
+          image: busybox:1.38.0@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d
+          command: ['sh', '-c', 'until nc -w1 -z shared-db 5432 2>/dev/null; do echo "waiting for shared-db..."; sleep 3; done']
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "16Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+      containers:
+        - name: vaultwarden
+          image: vaultwarden/server:1.37.4-alpine@sha256:19ea2b669945d842dadc3d500f2d6a795866a003330f59a47b9634658bae98bb
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: VAULTWARDEN_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: VAULTWARDEN_DB_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql://vaultwarden:$(VAULTWARDEN_DB_PASSWORD)@shared-db:5432/vaultwarden?sslmode=prefer"
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: VAULTWARDEN_ADMIN_TOKEN
+            - name: DOMAIN
+              value: "http://vault.localhost"
+            - name: VAULT_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: domain-config
+                  key: VAULT_DOMAIN
+            # ── SSO via Pocket ID ──────────────────────────────────
+            # Bitwarden/Vaultwarden speichert Accounts nach E-Mail; der Master-
+            # Passwort-Flow ist unvermeidbar (Vault-Verschlüsselung). SSO hier
+            # ersetzt nur das Login-Passwort — die E-Mail wird aus dem OIDC-
+            # Token vorbefüllt, nicht manuell abgefragt.
+            - name: SSO_ENABLED
+              value: "true"
+            - name: SSO_ONLY
+              value: "true"
+            - name: SSO_PKCE
+              value: "true"
+            - name: SSO_SCOPES
+              value: "email profile"
+            - name: SSO_CLIENT_ID
+              value: "vaultwarden"
+            - name: SSO_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: POCKET_ID_VAULTWARDEN_SECRET
+            - name: SSO_AUTHORITY
+              value: "http://pocket-id:1411"
+            - name: SIGNUPS_ALLOWED
+              value: "true"
+            - name: POCKET_ID_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: domain-config
+                  key: POCKET_ID_DOMAIN
+            # T900001: SMTP abgeschaltet — keine Benachrichtigungs- oder
+            # Passwort-Zuruecksetzen-Mails mehr. Config bleibt im Manifest
+            # (Reactivierung = SMTP-Variablen wieder einsetzen).
+            - name: DISABLE_PASSWORD_CHANGE
+              value: "true"
+            - name: TZ
+              value: Europe/Berlin
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /alive
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /alive
+              port: 80
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: "100m"
+            limits:
+              memory: 512Mi
+              cpu: "500m"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: vaultwarden-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vaultwarden
+  labels:
+    app: vaultwarden
+spec:
+  selector:
+    app: vaultwarden
+  ports:
+    - port: 80
+      targetPort: 80

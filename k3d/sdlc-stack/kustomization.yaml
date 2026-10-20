@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: workspace
+resources:
+  - ../namespace.yaml
+  - ../configmap-domains.yaml
+  - ../secrets.yaml
+  # sdlc-console referenziert website-secrets per secretKeyRef (WEBSITE_DB_PASSWORD,
+  # POCKET_ID_WEBSITE_SECRET, CRON_SECRET). Das Secret ist nur hier definiert; ohne
+  # diese Zeile bleibt der Pod in CreateContainerConfigError ("secret website-secrets
+  # not found"). Das `namespace: ${WEBSITE_NAMESPACE}` der Datei wird vom
+  # `namespace: workspace` dieser Kustomization überschrieben — kustomize läuft vor
+  # envsubst, der Platzhalter wird also nie ausgewertet.
+  - ../website-dev-secrets.yaml
+  - ../shared-db.yaml
+  - ../website-schema.yaml
+  - ../pocket-id.yaml
+  - ../pocket-id-db-init-sql.yaml
+  - ../pocket-id-client-seed.yaml
+  - ../pocket-id-client-seed-rbac.yaml
+  - ../pocket-id-client-seed-website-rbac.yaml
+  - ../llm-gpu.yaml
+  - sdlc-console-sessions-db.yaml
+  - sdlc-console.yaml
+  - sdlc-console-rbac.yaml
+  - sdlc-ingress.yaml
+
+patches:
+  - path: sdlc-secrets-patch.yaml

@@ -1,0 +1,76 @@
+# Enable Pocket ID OIDC on Grafana in prod. The OIDC client_secret + admin
+# password come from the `grafana-oidc` SealedSecret. Pocket ID has no groups
+# — the role-attribute-path keys on the boolean isAdmin claim (T000972).
+#
+# The kube-prometheus-stack chart renders a `monitoring-grafana` Secret with the
+# hardcoded default admin/admin credentials (T014536). Prod overrides every
+# consumer of that credential:
+#   - GF_SECURITY_ADMIN_PASSWORD / sidecar REQ_PASSWORD → grafana-oidc
+#     SealedSecret (GRAFANA_ADMIN_PASSWORD)
+#   - GF_SECURITY_ADMIN_USER / sidecar REQ_USERNAME → literal "admin" (the
+#     username is not secret; pinning it lets us drop the old Secret entirely)
+#   - The `monitoring-grafana` Secret itself is $patch:delete'd in
+#     prod/monitoring/kustomization.yaml so admin/admin never reaches the
+#     rendered fleet artifact.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitoring-grafana
+  namespace: monitoring
+spec:
+  template:
+    spec:
+      containers:
+        - name: grafana
+          env:
+            - name: GF_AUTH_GENERIC_OAUTH_ENABLED
+              value: "true"
+            - name: GF_AUTH_GENERIC_OAUTH_NAME
+              value: "Pocket ID"
+            - name: GF_AUTH_GENERIC_OAUTH_CLIENT_ID
+              value: "grafana"
+            - name: GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-oidc
+                  key: POCKET_ID_GRAFANA_SECRET
+            - name: GF_AUTH_GENERIC_OAUTH_SCOPES
+              value: "openid email profile"
+            - name: GF_AUTH_GENERIC_OAUTH_AUTH_URL
+              value: "https://auth.${PROD_DOMAIN}/authorize"
+            - name: GF_AUTH_GENERIC_OAUTH_TOKEN_URL
+              value: "https://auth.${PROD_DOMAIN}/api/oidc/token"
+            - name: GF_AUTH_GENERIC_OAUTH_API_URL
+              value: "https://auth.${PROD_DOMAIN}/api/oidc/userinfo"
+            - name: GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH
+              value: "isAdmin && 'Admin' || 'Viewer'"
+            - name: GF_SECURITY_ADMIN_USER
+              value: "admin"
+              valueFrom: null
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-oidc
+                  key: GRAFANA_ADMIN_PASSWORD
+            - name: GF_SERVER_ROOT_URL
+              value: "https://grafana.${PROD_DOMAIN}"
+        - name: grafana-sc-dashboard
+          env:
+            - name: REQ_USERNAME
+              value: "admin"
+              valueFrom: null
+            - name: REQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-oidc
+                  key: GRAFANA_ADMIN_PASSWORD
+        - name: grafana-sc-datasources
+          env:
+            - name: REQ_USERNAME
+              value: "admin"
+              valueFrom: null
+            - name: REQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-oidc
+                  key: GRAFANA_ADMIN_PASSWORD

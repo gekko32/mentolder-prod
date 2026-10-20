@@ -1,0 +1,414 @@
+# NUR VIA TASK DEPLOYEN [T901777]: Datei enthaelt Escapes/Platzhalter fuer den Task/Flux-Render-Pfad. Direktes 'kubectl apply -f' hinterlaesst Literale (siehe k3d/README.md).
+# ═══════════════════════════════════════════════════════════════════
+# Shared PostgreSQL — single instance, one database per service
+# Replaces the former per-service database deployments
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-db-pvc
+  namespace: workspace
+  labels:
+    app: shared-db
+spec:
+  storageClassName: local-path
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 25Gi
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shared-db-init
+  namespace: workspace
+  labels:
+    app: shared-db
+data:
+  init-databases.sh: |
+    #!/bin/bash
+    set -e
+    # Create databases and users for each service (idempotent).
+    # Uses DO blocks so re-runs don't fail if users/DBs already exist.
+    # Always syncs passwords to match current secrets.
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-'EOSQL'
+      -- Helper: create user if not exists
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'nextcloud') THEN CREATE USER nextcloud; END IF;
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'vaultwarden') THEN CREATE USER vaultwarden; END IF;
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'website') THEN CREATE USER website; END IF;
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'pentest') THEN CREATE USER pentest; END IF;
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'videovault') THEN CREATE USER videovault; END IF;
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'website_massage') THEN CREATE USER website_massage; END IF;
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'pocket_id') THEN CREATE USER pocket_id; END IF;
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'pocket_id_korczewski') THEN CREATE USER pocket_id_korczewski; END IF;
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'mcp_readonly') THEN CREATE ROLE mcp_readonly LOGIN NOSUPERUSER; END IF;
+      END $$;
+    EOSQL
+
+    # Sync passwords to match current secrets (works on first run and re-runs)
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+      -c "ALTER USER nextcloud WITH PASSWORD '$${NEXTCLOUD_DB_PASSWORD}';" \
+      -c "ALTER USER vaultwarden WITH PASSWORD '$${VAULTWARDEN_DB_PASSWORD}';" \
+      -c "ALTER USER website WITH PASSWORD '$${WEBSITE_DB_PASSWORD}';" \
+      -c "ALTER USER pocket_id WITH PASSWORD '$${POCKET_ID_DB_PASSWORD}';" \
+      -c "ALTER USER pentest WITH PASSWORD 'pentest_access_2026';" \
+      -c "ALTER USER videovault WITH PASSWORD '$${VIDEOVAULT_DB_PASSWORD}';" \
+      -c "ALTER ROLE mcp_readonly SET default_transaction_read_only = on;" \
+      -c "GRANT pg_read_all_data TO mcp_readonly;" \
+
+    # T901440: neue Massage-Rollen nur bei nicht-leerem Secret synchronisieren.
+    # Fehlt der Key (optional:true), bleibt nur die neue Rolle unbenutzbar;
+    # bestehende DBs sind nicht betroffen (Leere aus 2026-07-27). Übergabe per
+    # psql-Variable mit SQL-Literal-Quoting (:'var'), keine Stringinterpolation.
+    if [ -n "$WEBSITE_MASSAGE_DB_PASSWORD" ]; then
+      psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+        -v newpw="$WEBSITE_MASSAGE_DB_PASSWORD" \
+        -c "ALTER USER website_massage WITH PASSWORD :'newpw';"
+    fi
+    if [ -n "$POCKET_ID_KORCZEWSKI_DB_PASSWORD" ]; then
+      psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+        -v newpw="$POCKET_ID_KORCZEWSKI_DB_PASSWORD" \
+        -c "ALTER USER pocket_id_korczewski WITH PASSWORD :'newpw';"
+    fi
+
+    # Create databases if not exists
+    for db_user in nextcloud vaultwarden website pentest videovault website_massage pocket_id pocket_id_korczewski; do
+      psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+        SELECT 'CREATE DATABASE $${db_user} OWNER $${db_user}'
+        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$${db_user}')\gexec
+        GRANT ALL PRIVILEGES ON DATABASE $${db_user} TO $${db_user};
+    EOSQL
+    done
+
+    # Initialize Pentest Flag Data
+    psql -v ON_ERROR_STOP=1 --username "pentest" --dbname "pentest" <<-'EOSQL'
+      CREATE TABLE IF NOT EXISTS confidential_projects (
+        id SERIAL PRIMARY KEY,
+        project_name TEXT NOT NULL,
+        secret_key TEXT NOT NULL
+      );
+      INSERT INTO confidential_projects (project_name, secret_key)
+      SELECT 'PROJECT_NEBULA', 'FLAG{SHARED_DB_DATA_EXFILTRATION_SUCCESS}'
+      WHERE NOT EXISTS (SELECT 1 FROM confidential_projects WHERE project_name = 'PROJECT_NEBULA');
+    EOSQL
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shared-db
+  labels:
+    app: shared-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shared-db
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: shared-db
+    spec:
+      securityContext:
+        fsGroup: 999
+        runAsUser: 999
+        runAsGroup: 999
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Selbstsigniertes TLS-Zertifikat für interne PostgreSQL-Verbindungen
+        # erzeugen. Zertifikat lebt im emptyDir → bei jedem Pod-Restart neu
+        # generiert. sslmode=prefer auf Client-Seite (libpq-Default) handelt
+        # TLS opportunistisch aus. NetworkPolicies (Default-Deny-Ingress)
+        # bilden die primäre Vertrauensgrenze.
+        - name: generate-tls-cert
+          # T016560: plain Postgres (Debian/glibc, passend zum bestehenden
+          # Datenverzeichnis) — pgvector entfaellt, Vektor-Suche lebt in Dev.
+          image: postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 999
+            capabilities:
+              drop: ["ALL"]
+          command: [bash, -c]
+          args:
+            - |
+              set -e
+              openssl req -new -x509 -days 825 -nodes \
+                -out /etc/postgresql/certs/server.crt \
+                -keyout /etc/postgresql/certs/server.key \
+                -subj "/CN=shared-db.workspace.svc.cluster.local"
+              chmod 600 /etc/postgresql/certs/server.key
+              chmod 644 /etc/postgresql/certs/server.crt
+              echo "PostgreSQL TLS-Zertifikat generiert"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: tls-certs
+              mountPath: /etc/postgresql/certs
+      containers:
+        - name: postgres
+          # T016560: plain Postgres, siehe Init-Container oben.
+          image: postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 999
+            capabilities:
+              drop: ["ALL"]
+          args:
+            - "postgres"
+            - "-c"
+            - "ssl=on"
+            - "-c"
+            - "ssl_cert_file=/etc/postgresql/certs/server.crt"
+            - "-c"
+            - "ssl_key_file=/etc/postgresql/certs/server.key"
+            - "-c"
+            - "shared_preload_libraries=pg_stat_statements"
+            - "-c"
+            - "shared_buffers=512MB"
+            - "-c"
+            - "random_page_cost=1.1"
+            - "-c"
+            - "effective_cache_size=1536MB"
+            - "-c"
+            - "track_io_timing=on"
+            - "-c"
+            - "idle_in_transaction_session_timeout=10min"
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_DB
+              value: postgres
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: SHARED_DB_PASSWORD
+            - name: NEXTCLOUD_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: NEXTCLOUD_DB_PASSWORD
+            - name: VAULTWARDEN_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: VAULTWARDEN_DB_PASSWORD
+            - name: WEBSITE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: WEBSITE_DB_PASSWORD
+            - name: VIDEOVAULT_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: VIDEOVAULT_DB_PASSWORD
+            - name: POCKET_ID_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: POCKET_ID_DB_PASSWORD
+            # T901440: neue Massage-Keys, optional — ein noch fehlender Key darf
+            # den bestehenden shared-db-Pod nicht am Start hindern.
+            - name: WEBSITE_MASSAGE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: WEBSITE_MASSAGE_DB_PASSWORD
+                  optional: true
+            - name: POCKET_ID_KORCZEWSKI_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: POCKET_ID_KORCZEWSKI_DB_PASSWORD
+                  optional: true
+
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/bash
+                  - -c
+                  - |
+                    until pg_isready -U postgres; do sleep 2; done
+                    # ACHTUNG (T002306): Die doppelten Dollarzeichen in $${VAR} und
+                    # $$db unten sind KEIN Tippfehler — nicht "korrigieren".
+                    # Sie markieren LAUFZEIT-Variablen: die Shell IM Container soll
+                    # sie expandieren, nicht der Renderer.
+                    # scripts/flux-render-artifact.sh baut seine envsubst-Allowlist
+                    # dynamisch aus dem Manifest und filtert die so markierten Namen
+                    # heraus; danach macht es $${VAR} -> ${VAR} rueckgaengig.
+                    # Ohne das $$ landet die Variable in ihrer eigenen Ersetzungsliste,
+                    # envsubst setzt sie (nicht gesetzt) auf "" und der Pod fuehrt
+                    # `ALTER USER ... WITH PASSWORD ''` aus — nextcloud, vaultwarden,
+                    # videovault und pocket_id sind dann aus ihrer eigenen Datenbank
+                    # ausgesperrt (Prod-Ausfall am 2026-07-27, SSO plattformweit down).
+                    # Der fail-closed-Check des Renderers faengt das nicht: eine leer
+                    # substituierte Variable sieht fuer ihn korrekt aus.
+                    # Self-heal: ensure every service role + database exists on each start.
+                    # The one-shot /docker-entrypoint-initdb.d/01-init-databases.sh runs only
+                    # on first PGDATA init and has left databases uncreated on fresh clusters
+                    # (roles created, DBs missing — e.g. korczewski on fleet, 2026-05-30).
+                    # Running it idempotently here lets a partial/failed initdb self-heal on
+                    # the next pod restart, so vaultwarden/docuseal/website DBs are
+                    # always present regardless of initdb outcome.
+                    psql -U postgres -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN
+                      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='nextcloud')   THEN CREATE USER nextcloud;   END IF;
+                      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='vaultwarden') THEN CREATE USER vaultwarden; END IF;
+                      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='website')     THEN CREATE USER website;     END IF;
+                      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='pentest')     THEN CREATE USER pentest;     END IF;
+                      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='videovault') THEN CREATE USER videovault; END IF;
+                      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='website_massage') THEN CREATE USER website_massage; END IF;
+                      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='pocket_id_korczewski') THEN CREATE USER pocket_id_korczewski; END IF;
+                      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='pocket_id')  THEN CREATE USER pocket_id;  END IF;
+                      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='mcp_readonly') THEN CREATE ROLE mcp_readonly LOGIN NOSUPERUSER; END IF;
+                    END $$;"
+                    for db in nextcloud vaultwarden website pentest videovault pocket_id website_massage pocket_id_korczewski; do
+                      psql -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1 \
+                        || psql -U postgres -c "CREATE DATABASE \"$$db\" OWNER \"$$db\";"
+                    done
+                    psql -U postgres \
+                      -c "ALTER USER nextcloud WITH PASSWORD '$${NEXTCLOUD_DB_PASSWORD}';" \
+                      -c "ALTER USER vaultwarden WITH PASSWORD '$${VAULTWARDEN_DB_PASSWORD}';" \
+                      -c "ALTER USER website WITH PASSWORD '$${WEBSITE_DB_PASSWORD}';" \
+                      -c "ALTER USER videovault WITH PASSWORD '$${VIDEOVAULT_DB_PASSWORD}';" \
+                      -c "ALTER USER pocket_id WITH PASSWORD '$${POCKET_ID_DB_PASSWORD}';" \
+                      -c "ALTER ROLE mcp_readonly SET default_transaction_read_only = on;" \
+                      -c "GRANT pg_read_all_data TO mcp_readonly;" \
+                      -c "GRANT pg_read_all_stats TO website;"
+                    for ext_db in website vaultwarden pocket_id pocket_id_korczewski website_massage; do
+                      psql -U postgres -d "$$ext_db" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null || true
+                    done
+                    # T901440: neue Rollen nur bei nicht-leerem Secret (s. init-Skript).
+                    if [ -n "$WEBSITE_MASSAGE_DB_PASSWORD" ]; then
+                      psql -U postgres -v newpw="$WEBSITE_MASSAGE_DB_PASSWORD" \
+                        -c "ALTER USER website_massage WITH PASSWORD :'newpw';"
+                    fi
+                    if [ -n "$POCKET_ID_KORCZEWSKI_DB_PASSWORD" ]; then
+                      psql -U postgres -v newpw="$POCKET_ID_KORCZEWSKI_DB_PASSWORD" \
+                        -c "ALTER USER pocket_id_korczewski WITH PASSWORD :'newpw';"
+                    fi
+
+                    # Owner-Normalisierung [T900806]: die ensure-Skripte laufen mit
+                    # SET ROLE website und brauchen REFERENCES auf public-Tabellen.
+                    # Gehoeren diese postgres (z. B. nach einem Restore als postgres),
+                    # scheitern Foreign Keys auf public.brands/customers. Auf Prod ein No-op.
+                    psql -U postgres -d website -Atc "SELECT format('ALTER TABLE public.%I OWNER TO website;', tablename) FROM pg_tables WHERE schemaname = 'public' AND tableowner = 'postgres'" \
+                      | psql -U postgres -d website -v ON_ERROR_STOP=1 -q \
+                      || echo "shared-db postStart: owner-normalisation failed [T900806]" >/proc/1/fd/2
+                    # Fehler sichtbar in den Pod-Logs statt `|| true`; der Hook selbst
+                    # darf nicht scheitern, sonst killt kubelet den Container.
+                    for s in ensure-knowledge-schema ensure-meetings-schema ensure-bachelorprojekt-schema; do
+                      bash /scripts/$$s.sh \
+                        || echo "shared-db postStart: $$s.sh failed (exit $$?) [T900806]" >/proc/1/fd/2
+                    done
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d/01-init-databases.sh
+              subPath: init-databases.sh
+            - name: website-schema
+              mountPath: /docker-entrypoint-initdb.d/02-meetings-schema.sh
+              subPath: init-meetings-schema.sh
+            - name: website-schema
+              mountPath: /scripts
+            - name: website-schema
+              mountPath: /docker-entrypoint-initdb.d/03-init-knowledge-schema.sh
+              subPath: init-knowledge-schema.sh
+            - name: tls-certs
+              mountPath: /etc/postgresql/certs
+              readOnly: true
+            # Parallel index builds allocate dynamic shared memory under
+            # /dev/shm; the containerd default of 64Mi breaks pg_restore of
+            # the website dump (T002064).
+            - name: dev-shm
+              mountPath: /dev/shm
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: 1Gi
+              cpu: "500m"
+            limits:
+              memory: 4Gi
+              cpu: "2"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: shared-db-pvc
+        - name: init
+          configMap:
+            name: shared-db-init
+        - name: website-schema
+          configMap:
+            name: website-schema
+        - name: tls-certs
+          emptyDir: {}
+        # 512Mi = 8x the failed 64MB DSM request, safely below the smallest
+        # effective postgres memory limit (2Gi via prod/patch-shared-db.yaml);
+        # Memory-backed emptyDir counts against the pod memory cgroup.
+        - name: dev-shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+---
+
+# Primary service name — used by MCP and direct access
+apiVersion: v1
+kind: Service
+metadata:
+  name: shared-db
+  namespace: workspace
+  labels:
+    app: shared-db
+spec:
+  selector:
+    app: shared-db
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+
+# Backward-compatible aliases so existing service connection strings work unchanged
+apiVersion: v1
+kind: Service
+metadata:
+  name: nextcloud-db
+  namespace: workspace
+  labels:
+    app: shared-db
+spec:
+  selector:
+    app: shared-db
+  ports:
+    - port: 5432
+      targetPort: 5432

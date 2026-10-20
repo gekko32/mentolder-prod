@@ -1,0 +1,1967 @@
+# ── Meeting Knowledge Pipeline — Schema ──────────────────────────────────────
+# Applied to the 'website' database in shared-db.
+# init-meetings-schema.sh  → mounted in docker-entrypoint-initdb.d (fresh DB only)
+# ensure-meetings-schema.sh → called from postStart on every startup (existing DB)
+# Both scripts are idempotent (IF NOT EXISTS / ADD COLUMN IF NOT EXISTS throughout).
+# T901440: das psql-Ziel beider Meetings-Skripte ist ueber WEBSITE_SCHEMA_DB mit
+# Laufzeitdefault 'website' parametriert (fuer den Massage-Bootstrap auf
+# website_massage gesetzt; normaler postStart bleibt bei website).
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: website-schema
+  labels:
+    app: website
+data:
+  init-meetings-schema.sh: |
+    #!/bin/bash
+    set -e
+    echo "Initializing meetings schema..."
+
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "${WEBSITE_SCHEMA_DB:-website}" <<-'EOSQL'
+      -- Customer number sequence (M0020, M0021, …)
+      CREATE SEQUENCE IF NOT EXISTS customer_number_seq START 20;
+
+      -- For existing deployments: ensure the next nextval() call returns at least 20.
+      -- Uses is_called to distinguish fresh sequences (next = last_value) from
+      -- used ones (next = last_value + 1) without advancing the sequence itself.
+      DO $$
+      BEGIN
+        IF (SELECT CASE WHEN is_called THEN last_value + 1 ELSE last_value END
+            FROM customer_number_seq) < 20 THEN
+          PERFORM setval('customer_number_seq', 20, false);
+        END IF;
+      END $$;
+
+      -- Customers (cross-reference to Keycloak)
+
+      CREATE TABLE IF NOT EXISTS brands (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL
+      );
+      INSERT INTO brands (id, name) VALUES ('mentolder', 'Mentolder'), ('korczewski', 'Korczewski') ON CONFLICT DO NOTHING;
+
+      -- db-backup runs `pg_dump -U website -d website`. Schemas whose tables
+      -- are owned by another role (postgres) fail "permission denied for
+      -- table ..." mid-dump, marking the whole CronJob Failed.
+      -- Grant website read access on every backup-relevant schema so the dump
+      -- covers the full DB. Guarded per schema so it is a no-op when a schema
+      -- is absent. Idempotent; re-applies on every cluster reset. [T000403]
+      DO $$
+      DECLARE
+        s TEXT;
+      BEGIN
+        FOREACH s IN ARRAY ARRAY['public','bugs','bachelorprojekt','platform','meetings','audit'] LOOP
+          IF EXISTS (SELECT FROM pg_namespace WHERE nspname = s) THEN
+            EXECUTE format('GRANT USAGE ON SCHEMA %I TO website', s);
+            EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA %I TO website', s);
+            EXECUTE format('GRANT SELECT ON ALL SEQUENCES IN SCHEMA %I TO website', s);
+            EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT ON TABLES TO website', s);
+            EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT ON SEQUENCES TO website', s);
+          END IF;
+        END LOOP;
+      END $$;
+
+      CREATE TABLE IF NOT EXISTS customers (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          name TEXT NOT NULL,
+          email TEXT NOT NULL UNIQUE,
+          phone TEXT,
+          company TEXT,
+          keycloak_user_id TEXT,
+          created_at TIMESTAMPTZ DEFAULT now(),
+          updated_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      -- Add customer_number to existing deployments
+      ALTER TABLE customers ADD COLUMN IF NOT EXISTS customer_number TEXT UNIQUE;
+      UPDATE customers SET customer_number = 'M' || LPAD(nextval('customer_number_seq')::text, 4, '0') WHERE customer_number IS NULL;
+      ALTER TABLE customers ALTER COLUMN customer_number SET DEFAULT 'M' || LPAD(nextval('customer_number_seq')::text, 4, '0');
+
+      -- Enrollment tracking: allows admin to dismiss a pending enrollment without creating a portal account
+      ALTER TABLE customers ADD COLUMN IF NOT EXISTS enrollment_declined BOOLEAN NOT NULL DEFAULT FALSE;
+
+      -- Admin users: separate role and number from regular customers
+      ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;
+      ALTER TABLE customers ADD COLUMN IF NOT EXISTS admin_number TEXT UNIQUE;
+
+      -- Meeting history
+      CREATE TABLE IF NOT EXISTS meetings (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          customer_id UUID NOT NULL REFERENCES customers(id),
+          meeting_type TEXT NOT NULL,
+          scheduled_at TIMESTAMPTZ,
+          started_at TIMESTAMPTZ,
+          ended_at TIMESTAMPTZ,
+          duration_seconds INTEGER,
+          talk_room_token TEXT,
+          recording_path TEXT,
+          status TEXT DEFAULT 'scheduled'
+              CHECK (status IN ('scheduled','active','ended','transcribed','finalized')),
+          released_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      -- Full-text transcripts
+      CREATE TABLE IF NOT EXISTS transcripts (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          meeting_id UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+          full_text TEXT NOT NULL,
+          language TEXT DEFAULT 'de',
+          whisper_model TEXT DEFAULT 'Systran/faster-whisper-medium',
+          duration_seconds NUMERIC,
+          created_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      -- Transcript segments with timestamps
+      CREATE TABLE IF NOT EXISTS transcript_segments (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          transcript_id UUID NOT NULL REFERENCES transcripts(id) ON DELETE CASCADE,
+          segment_index INTEGER NOT NULL,
+          start_time NUMERIC NOT NULL,
+          end_time NUMERIC NOT NULL,
+          text TEXT NOT NULL,
+          speaker TEXT
+      );
+
+      -- Meeting artifacts (whiteboards, files, screenshots)
+      CREATE TABLE IF NOT EXISTS meeting_artifacts (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          meeting_id UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+          artifact_type TEXT NOT NULL
+              CHECK (artifact_type IN ('whiteboard','document','screenshot','file')),
+          name TEXT NOT NULL,
+          storage_path TEXT,
+          content_text TEXT,
+          metadata JSONB DEFAULT '{}',
+          created_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      -- AI-generated insights
+      CREATE TABLE IF NOT EXISTS meeting_insights (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          meeting_id UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+          insight_type TEXT NOT NULL
+              CHECK (insight_type IN ('summary','action_items','key_topics','sentiment','coaching_notes')),
+          content TEXT NOT NULL,
+          generated_by TEXT DEFAULT 'claude',
+          created_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      -- Bug report tickets (status tracking for /status page) live in the 'bugs' schema.
+      CREATE SCHEMA IF NOT EXISTS bugs AUTHORIZATION website;
+
+      -- One-time migration: move any pre-existing public.bug_tickets into bugs.bug_tickets.
+      -- Indexes and inbox_items FK follow automatically (PG tracks FKs by OID).
+      DO $mig$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'bug_tickets')
+           AND NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'bugs' AND tablename = 'bug_tickets') THEN
+          EXECUTE 'ALTER TABLE public.bug_tickets SET SCHEMA bugs';
+        END IF;
+      END $mig$;
+
+      CREATE TABLE IF NOT EXISTS bugs.bug_tickets (
+          ticket_id       TEXT PRIMARY KEY,
+          status          TEXT NOT NULL DEFAULT 'open'
+              CHECK (status IN ('open', 'resolved', 'archived')),
+          category        TEXT NOT NULL,
+          reporter_email  TEXT NOT NULL,
+          description     TEXT NOT NULL,
+          url             TEXT,
+          brand           TEXT REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT NOT NULL,
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          resolved_at     TIMESTAMPTZ,
+          resolution_note TEXT
+      );
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'bug_tickets_brand_fkey') THEN
+          ALTER TABLE bugs.bug_tickets ADD CONSTRAINT bug_tickets_brand_fkey FOREIGN KEY (brand) REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+        END IF;
+      END $$;
+
+      CREATE INDEX IF NOT EXISTS idx_bug_tickets_status ON bugs.bug_tickets(status);
+      ALTER TABLE bugs.bug_tickets OWNER TO website;
+      ALTER TABLE bugs.bug_tickets
+        ADD COLUMN IF NOT EXISTS screenshots_json JSONB,
+        ADD COLUMN IF NOT EXISTS fixed_in_pr      INTEGER,
+        ADD COLUMN IF NOT EXISTS fixed_at         TIMESTAMPTZ;
+      CREATE INDEX IF NOT EXISTS idx_bug_tickets_fixed_in_pr ON bugs.bug_tickets (fixed_in_pr);
+
+      -- ── Security Audit Log ──────────────────────────────────────────
+      CREATE SCHEMA IF NOT EXISTS audit AUTHORIZATION website;
+
+      CREATE TABLE IF NOT EXISTS audit.audit_log (
+        id          bigserial PRIMARY KEY,
+        actor_id    text,
+        actor_email text,
+        action      text NOT NULL,
+        target_type text,
+        target_id   text,
+        ip          inet,
+        ts          timestamptz NOT NULL DEFAULT now(),
+        metadata    jsonb
+      );
+      ALTER TABLE audit.audit_log OWNER TO website;
+      CREATE INDEX IF NOT EXISTS audit_log_ts_idx ON audit.audit_log (ts DESC);
+      CREATE INDEX IF NOT EXISTS audit_log_actor_idx ON audit.audit_log (actor_id, ts DESC);
+      CREATE INDEX IF NOT EXISTS audit_log_action_idx ON audit.audit_log (action, ts DESC);
+
+      -- ── Coaching Knowledge Pipeline ─────────────────────────────────
+      CREATE SCHEMA IF NOT EXISTS coaching AUTHORIZATION website;
+      -- Switch to the application role so all objects are owned by website.
+      SET ROLE website;
+
+      CREATE TABLE IF NOT EXISTS coaching.books (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        knowledge_collection_id UUID NOT NULL REFERENCES knowledge.collections(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        author TEXT,
+        source_filename TEXT NOT NULL,
+        license_note TEXT,
+        ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (knowledge_collection_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS coaching.snippet_clusters (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        book_id UUID REFERENCES coaching.books(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'manual' CHECK (kind IN ('auto','manual')),
+        parent_id UUID REFERENCES coaching.snippet_clusters(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (book_id, name)
+      );
+
+      CREATE TABLE IF NOT EXISTS coaching.snippets (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        book_id UUID NOT NULL REFERENCES coaching.books(id) ON DELETE CASCADE,
+        knowledge_chunk_id UUID REFERENCES knowledge.chunks(id) ON DELETE SET NULL,
+        cluster_id UUID REFERENCES coaching.snippet_clusters(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        tags TEXT[] NOT NULL DEFAULT '{}',
+        page INT,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        created_from_draft UUID
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_snippets_book_id ON coaching.snippets(book_id);
+      CREATE INDEX IF NOT EXISTS idx_snippets_cluster_id ON coaching.snippets(cluster_id);
+      CREATE INDEX IF NOT EXISTS idx_snippets_tags ON coaching.snippets USING GIN(tags);
+
+      CREATE TABLE IF NOT EXISTS coaching.templates (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        snippet_id UUID NOT NULL REFERENCES coaching.snippets(id) ON DELETE CASCADE,
+        target_surface TEXT NOT NULL CHECK (target_surface IN ('questionnaire','brett','chatroom','assistant')),
+        version INT NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','published','archived')),
+        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+        source_pointer JSONB NOT NULL,
+        surface_ref TEXT,
+        published_at TIMESTAMPTZ,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (snippet_id, target_surface, version)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_templates_snippet_id ON coaching.templates(snippet_id);
+      CREATE INDEX IF NOT EXISTS idx_templates_surface_status ON coaching.templates(target_surface, status);
+      CREATE INDEX IF NOT EXISTS idx_templates_surface_ref ON coaching.templates(surface_ref);
+
+      CREATE TABLE IF NOT EXISTS coaching.template_assignments (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        template_id UUID NOT NULL REFERENCES coaching.templates(id) ON DELETE CASCADE,
+        template_version INT NOT NULL,
+        client_id TEXT NOT NULL,
+        surface_specific_id TEXT,
+        assigned_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_assignments_template_id ON coaching.template_assignments(template_id);
+      CREATE INDEX IF NOT EXISTS idx_assignments_client_id ON coaching.template_assignments(client_id);
+
+      CREATE TABLE IF NOT EXISTS coaching.drafts (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        book_id UUID NOT NULL REFERENCES coaching.books(id) ON DELETE CASCADE,
+        knowledge_chunk_id UUID NOT NULL REFERENCES knowledge.chunks(id) ON DELETE CASCADE,
+        template_kind TEXT NOT NULL CHECK (template_kind IN ('reflection','dialog_pattern','exercise','case_example')),
+        suggested_payload JSONB NOT NULL,
+        classifier_model TEXT NOT NULL,
+        classifier_version TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','accepted','rejected','skipped')),
+        reviewed_by TEXT,
+        reviewed_at TIMESTAMPTZ,
+        reject_reason TEXT,
+        resulting_snippet_id UUID REFERENCES coaching.snippets(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (knowledge_chunk_id, classifier_version)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_drafts_book_status ON coaching.drafts(book_id, status);
+      CREATE INDEX IF NOT EXISTS idx_drafts_kind_status ON coaching.drafts(template_kind, status);
+
+      CREATE TABLE IF NOT EXISTS coaching.sessions (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        brand         TEXT REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT NOT NULL DEFAULT 'mentolder',
+        client_id     UUID REFERENCES public.customers(id) ON DELETE SET NULL,
+        client_name   TEXT,
+        mode          TEXT NOT NULL DEFAULT 'live' CHECK (mode IN ('live','prep')),
+        title         TEXT NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active','paused','completed','abandoned')),
+        created_by    TEXT NOT NULL,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+        completed_at  TIMESTAMPTZ,
+        archived_at   TIMESTAMPTZ,
+        llm_summary   TEXT,
+        llm_summary_at TIMESTAMPTZ
+      );
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sessions_brand_fkey') THEN
+          ALTER TABLE coaching.sessions ADD CONSTRAINT sessions_brand_fkey FOREIGN KEY (brand) REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+        END IF;
+      END $$;
+      CREATE INDEX IF NOT EXISTS idx_sessions_brand ON coaching.sessions(brand);
+      CREATE INDEX IF NOT EXISTS idx_sessions_client ON coaching.sessions(client_id);
+
+      CREATE TABLE IF NOT EXISTS coaching.questionnaire_insights_cache (
+        key         TEXT PRIMARY KEY,
+        payload     JSONB NOT NULL,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS coaching.session_steps (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id    UUID NOT NULL REFERENCES coaching.sessions(id) ON DELETE CASCADE,
+        step_number   INT NOT NULL,
+        step_name     TEXT NOT NULL,
+        phase         TEXT NOT NULL CHECK (phase IN ('problem_ziel','analyse','loesung','umsetzung')),
+        coach_inputs  JSONB NOT NULL DEFAULT '{}',
+        ai_prompt     TEXT,
+        ai_response   TEXT,
+        coach_notes   TEXT,
+        status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','generated','accepted','skipped')),
+        generated_at  TIMESTAMPTZ,
+        UNIQUE (session_id, step_number)
+      );
+
+      CREATE TABLE IF NOT EXISTS coaching.session_audit_log (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id  UUID NOT NULL REFERENCES coaching.sessions(id) ON DELETE CASCADE,
+        event_type  TEXT NOT NULL
+                      CHECK (event_type IN
+                        ('status_change','field_change','ai_request','notes_change')),
+        actor       TEXT NOT NULL,
+        step_number INT,
+        payload     JSONB NOT NULL DEFAULT '{}',
+        changed_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_session
+        ON coaching.session_audit_log(session_id, changed_at DESC);
+
+      CREATE TABLE IF NOT EXISTS coaching.ki_config (
+        id           SERIAL PRIMARY KEY,
+        brand        TEXT NOT NULL,
+        provider     TEXT NOT NULL
+                       CHECK (provider IN ('claude','openai','mistral','lumo')),
+        is_active    BOOLEAN NOT NULL DEFAULT false,
+        model_name   TEXT,
+        display_name TEXT NOT NULL,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (brand, provider)
+      );
+      INSERT INTO coaching.ki_config (brand, provider, is_active, model_name, display_name)
+      VALUES
+        ('mentolder',  'claude',  true,  'claude-haiku-4-5-20251001','Claude (Anthropic)'),
+        ('mentolder',  'openai',  false, 'gpt-4o-mini',              'ChatGPT (OpenAI)'),
+        ('mentolder',  'mistral', false, 'mistral-small-latest',     'Mistral'),
+        ('mentolder',  'lumo',    false, null,                       'Lumo'),
+        ('korczewski', 'claude',  true,  'claude-haiku-4-5-20251001','Claude (Anthropic)'),
+        ('korczewski', 'openai',  false, 'gpt-4o-mini',              'ChatGPT (OpenAI)'),
+        ('korczewski', 'mistral', false, 'mistral-small-latest',     'Mistral'),
+        ('korczewski', 'lumo',    false, null,                       'Lumo')
+      ON CONFLICT (brand, provider) DO NOTHING;
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_ki_config_one_active_per_brand
+        ON coaching.ki_config (brand)
+        WHERE is_active = true;
+
+      CREATE TABLE IF NOT EXISTS coaching.step_templates (
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        brand            TEXT NOT NULL,
+        step_number      INT NOT NULL,
+        step_name        TEXT NOT NULL,
+        phase            TEXT NOT NULL CHECK (phase IN ('problem_ziel','analyse','loesung','umsetzung')),
+        system_prompt    TEXT NOT NULL,
+        user_prompt_tpl  TEXT NOT NULL,
+        input_schema     JSONB NOT NULL DEFAULT '[]',
+        keywords         TEXT[] NOT NULL DEFAULT '{}',
+        is_active        BOOLEAN NOT NULL DEFAULT true,
+        sort_order       INT NOT NULL DEFAULT 0,
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (brand, step_number)
+      );
+
+      -- ── Learning Progress Tracking ──────────────────────────────────
+      CREATE TABLE IF NOT EXISTS learning_progress (
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        keycloak_user_id TEXT NOT NULL,
+        brand            TEXT NOT NULL DEFAULT 'mentolder'
+                           REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+        item_type        TEXT NOT NULL CHECK (item_type IN ('goal','tool')),
+        item_id          TEXT NOT NULL,
+        status           TEXT NOT NULL DEFAULT 'todo'
+                           CHECK (status IN ('todo','in_progress','done')),
+        note             TEXT,
+        started_at       TIMESTAMPTZ,
+        completed_at     TIMESTAMPTZ,
+        updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (keycloak_user_id, brand, item_type, item_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_learning_progress_admin_agg
+        ON learning_progress (brand, keycloak_user_id);
+      CREATE INDEX IF NOT EXISTS idx_learning_progress_updated
+        ON learning_progress (updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS onboarding_state (
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        keycloak_user_id TEXT NOT NULL,
+        brand            TEXT NOT NULL DEFAULT 'mentolder'
+                           REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+        step_id          TEXT NOT NULL,
+        completed_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (keycloak_user_id, brand, step_id)
+      );
+
+      -- Revert to superuser to run GRANTs (website role cannot GRANT to itself).
+      RESET ROLE;
+      GRANT USAGE ON SCHEMA coaching TO website;
+      GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA coaching TO website;
+      GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA coaching TO website;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA coaching GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO website;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA coaching GRANT USAGE, SELECT ON SEQUENCES TO website;
+
+      -- Indexes for MCP query patterns
+      CREATE INDEX IF NOT EXISTS idx_meetings_customer ON meetings(customer_id);
+      CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings(status);
+      CREATE INDEX IF NOT EXISTS idx_transcripts_meeting ON transcripts(meeting_id);
+      CREATE INDEX IF NOT EXISTS idx_segments_transcript ON transcript_segments(transcript_id);
+      CREATE INDEX IF NOT EXISTS idx_artifacts_meeting ON meeting_artifacts(meeting_id);
+      CREATE INDEX IF NOT EXISTS idx_insights_meeting ON meeting_insights(meeting_id);
+      CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email);
+
+      -- ── Messaging System ──────────────────────────────────────────────
+
+      CREATE TABLE IF NOT EXISTS inbox_items (
+        id              SERIAL PRIMARY KEY,
+        type            TEXT NOT NULL CHECK (type IN ('registration','booking','contact','bug','meeting_finalize','user_message')),
+        status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','actioned','archived')),
+        reference_id    TEXT,
+        reference_table TEXT,
+        -- bug_ticket_id keeps the tickets.tickets(external_id) slug (e.g. T000287,
+        -- BR-YYYYMMDD-xxxx). The FK is installed *after* tickets.tickets exists,
+        -- below — bootstrap-safe on fresh DBs where tickets-db.ts has not yet
+        -- run.
+        bug_ticket_id   TEXT,
+        payload         JSONB,
+        created_at      TIMESTAMPTZ DEFAULT now(),
+        actioned_at     TIMESTAMPTZ,
+        actioned_by     TEXT
+      );
+      ALTER TABLE inbox_items ADD COLUMN IF NOT EXISTS is_test_data BOOLEAN NOT NULL DEFAULT false;
+      CREATE INDEX IF NOT EXISTS idx_inbox_items_status ON inbox_items(status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_inbox_items_is_test_data
+        ON inbox_items (is_test_data) WHERE is_test_data = true;
+
+      -- inbox_items.bug_ticket_id FK repoint (2026-05-12).
+      -- Pre-sunset, this column FK'd into bugs.bug_tickets(ticket_id). Sunset
+      -- dropped that FK, leaving inbox_items orphan-prone after
+      -- tickets.fn_purge_test_data() deletes from tickets.tickets directly.
+      -- Re-add the FK against the new authoritative store with CASCADE.
+      -- Guarded so a partial fresh-DB run (tickets schema not yet bootstrapped)
+      -- doesn't abort the whole schema init.
+      DO $inbox_fk$
+      BEGIN
+        IF to_regclass('tickets.tickets') IS NOT NULL THEN
+          ALTER TABLE inbox_items
+            DROP CONSTRAINT IF EXISTS inbox_items_bug_ticket_id_fkey;
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+             WHERE conname = 'inbox_items_bug_ticket_fkey'
+               AND conrelid = 'public.inbox_items'::regclass
+          ) THEN
+            -- NULL out orphans first so the FK can attach.
+            UPDATE inbox_items
+               SET bug_ticket_id = NULL
+             WHERE bug_ticket_id IS NOT NULL
+               AND NOT EXISTS (
+                     SELECT 1 FROM tickets.tickets t
+                      WHERE t.external_id = inbox_items.bug_ticket_id
+                   );
+            ALTER TABLE inbox_items
+              ADD CONSTRAINT inbox_items_bug_ticket_fkey
+              FOREIGN KEY (bug_ticket_id)
+              REFERENCES tickets.tickets(external_id)
+              ON DELETE CASCADE;
+          END IF;
+        END IF;
+      END $inbox_fk$;
+
+      CREATE TABLE IF NOT EXISTS message_threads (
+        id              SERIAL PRIMARY KEY,
+        customer_id     UUID REFERENCES customers(id),
+        subject         TEXT,
+        created_at      TIMESTAMPTZ DEFAULT now(),
+        last_message_at TIMESTAMPTZ DEFAULT now()
+      );
+      ALTER TABLE message_threads ADD COLUMN IF NOT EXISTS is_test_data BOOLEAN NOT NULL DEFAULT false;
+      CREATE INDEX IF NOT EXISTS idx_message_threads_is_test_data
+        ON message_threads (is_test_data) WHERE is_test_data = true;
+
+      CREATE TABLE IF NOT EXISTS messages (
+        id                   SERIAL PRIMARY KEY,
+        thread_id            INT NOT NULL REFERENCES message_threads(id),
+        sender_id            TEXT NOT NULL,
+        sender_role          TEXT NOT NULL CHECK (sender_role IN ('admin','user')),
+        sender_customer_id   UUID REFERENCES customers(id) ON DELETE SET NULL,
+        body                 TEXT NOT NULL,
+        created_at           TIMESTAMPTZ DEFAULT now(),
+        read_at              TIMESTAMPTZ,
+        notification_sent_at TIMESTAMPTZ,
+        CHECK (sender_role = 'admin' OR sender_customer_id IS NOT NULL)
+      );
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_test_data BOOLEAN NOT NULL DEFAULT false;
+      CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, id ASC);
+      CREATE INDEX IF NOT EXISTS idx_messages_is_test_data
+        ON messages (is_test_data) WHERE is_test_data = true;
+
+      CREATE TABLE IF NOT EXISTS chat_rooms (
+        id                  SERIAL PRIMARY KEY,
+        name                TEXT NOT NULL,
+        created_by          TEXT NOT NULL,
+        created_at          TIMESTAMPTZ DEFAULT now(),
+        archived_at         TIMESTAMPTZ,
+        is_direct           BOOLEAN NOT NULL DEFAULT FALSE,
+        direct_customer_id  UUID REFERENCES customers(id) ON DELETE SET NULL
+      );
+      ALTER TABLE chat_rooms ADD COLUMN IF NOT EXISTS is_direct BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE chat_rooms ADD COLUMN IF NOT EXISTS direct_customer_id UUID REFERENCES customers(id) ON DELETE SET NULL;
+
+      CREATE TABLE IF NOT EXISTS chat_room_members (
+        room_id     INT NOT NULL REFERENCES chat_rooms(id),
+        customer_id UUID NOT NULL REFERENCES customers(id),
+        joined_at   TIMESTAMPTZ DEFAULT now(),
+        PRIMARY KEY (room_id, customer_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS chat_messages (
+        id                   SERIAL PRIMARY KEY,
+        room_id              INT NOT NULL REFERENCES chat_rooms(id),
+        sender_id            TEXT NOT NULL,
+        sender_customer_id   UUID REFERENCES customers(id) ON DELETE SET NULL,
+        body                 TEXT NOT NULL,
+        created_at           TIMESTAMPTZ DEFAULT now(),
+        notification_sent_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS idx_chat_messages_room ON chat_messages(room_id, id ASC);
+
+      CREATE TABLE IF NOT EXISTS chat_message_reads (
+        message_id  INT NOT NULL REFERENCES chat_messages(id),
+        customer_id UUID NOT NULL REFERENCES customers(id),
+        read_at     TIMESTAMPTZ DEFAULT now(),
+        PRIMARY KEY (message_id, customer_id)
+      );
+
+      -- ── DocuSeal Document System ──────────────────────────────────
+
+      -- Contract templates created in the Dokumenteneditor
+      CREATE TABLE IF NOT EXISTS document_templates (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        title TEXT NOT NULL,
+        html_body TEXT NOT NULL,
+        docuseal_template_id INTEGER,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      -- Assignments: admin assigns a template to a client
+      CREATE TABLE IF NOT EXISTS document_assignments (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+        template_id UUID NOT NULL REFERENCES document_templates(id) ON DELETE CASCADE,
+        docuseal_submission_slug TEXT,
+        docuseal_embed_src TEXT,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'completed', 'expired')),
+        assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        signed_at TIMESTAMPTZ
+      );
+
+      ALTER TABLE document_assignments ADD COLUMN IF NOT EXISTS docuseal_template_id INTEGER;
+      ALTER TABLE document_templates ADD COLUMN IF NOT EXISTS stand_date TEXT;
+
+      CREATE INDEX IF NOT EXISTS idx_doc_assignments_customer ON document_assignments(customer_id);
+      CREATE INDEX IF NOT EXISTS idx_doc_assignments_status ON document_assignments(status);
+
+      -- ── Systemisches Brett ──────────────────────────────────────────
+
+      -- Layer 1: live state per Talk room. Overwritten as figures move.
+      CREATE TABLE IF NOT EXISTS brett_rooms (
+          room_token       TEXT PRIMARY KEY,
+          state            JSONB NOT NULL DEFAULT '{"figures":[]}'::jsonb,
+          last_modified_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      -- Layer 2: manual snapshots. Immutable, named, optionally linked to a customer.
+      CREATE TABLE IF NOT EXISTS brett_snapshots (
+          id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          room_token  TEXT,
+          customer_id UUID REFERENCES customers(id) ON DELETE SET NULL,
+          name        TEXT NOT NULL,
+          state       JSONB NOT NULL,
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_brett_snapshots_customer
+          ON brett_snapshots(customer_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_brett_snapshots_room
+          ON brett_snapshots(room_token, created_at DESC);
+
+      -- Szenario-Vorlagen (Phase D): curated snapshots flagged as templates.
+      -- Additive + idempotent — existing snapshots default to non-templates,
+      -- no row rewrite. No `brand` column (per-namespace DBs are physically
+      -- separate; YAGNI).
+      ALTER TABLE brett_snapshots ADD COLUMN IF NOT EXISTS is_template boolean NOT NULL DEFAULT false;
+      CREATE INDEX IF NOT EXISTS idx_brett_snapshots_template ON brett_snapshots(is_template) WHERE is_template;
+
+      -- Idempotency for auto-post on Talk-roomed meeting creation.
+      ALTER TABLE meetings
+          ADD COLUMN IF NOT EXISTS brett_link_posted_at TIMESTAMPTZ;
+
+      -- ── Live Poll System ──────────────────────────────────────────
+
+      CREATE TABLE IF NOT EXISTS polls (
+          id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          question    TEXT NOT NULL,
+          kind        TEXT NOT NULL CHECK (kind IN ('multiple_choice', 'text')),
+          options     TEXT[],
+          status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'locked')),
+          room_tokens TEXT[] NOT NULL DEFAULT '{}',
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+          locked_at   TIMESTAMPTZ,
+          CONSTRAINT polls_mc_options_not_null
+              CHECK (kind != 'multiple_choice' OR options IS NOT NULL)
+      );
+
+      CREATE TABLE IF NOT EXISTS poll_answers (
+          id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          poll_id      UUID NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+          answer       TEXT NOT NULL CHECK (char_length(answer) <= 1000),
+          submitted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_poll_answers_poll
+          ON poll_answers(poll_id, submitted_at DESC);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_polls_one_open
+          ON polls ((true)) WHERE status = 'open';
+
+      -- ── Test Runs / Test Results ─────────────────────────────────────────
+      CREATE TABLE IF NOT EXISTS test_runs (
+        id           TEXT PRIMARY KEY,
+        tier         TEXT NOT NULL,
+        test_ids     TEXT,
+        cluster      TEXT NOT NULL,
+        started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        finished_at  TIMESTAMPTZ,
+        status       TEXT NOT NULL DEFAULT 'running',
+        pass         INT,
+        fail         INT,
+        skip         INT,
+        duration_ms  INT
+      );
+
+      CREATE TABLE IF NOT EXISTS test_results (
+        id          BIGSERIAL PRIMARY KEY,
+        run_id      TEXT NOT NULL REFERENCES test_runs(id) ON DELETE CASCADE,
+        test_id     TEXT NOT NULL,
+        category    TEXT NOT NULL,
+        status      TEXT NOT NULL,
+        duration_ms INT,
+        message     TEXT,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS test_results_test_id_created_idx ON test_results (test_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS test_results_run_id_idx ON test_results (run_id);
+
+      -- Linkback from triage tickets back to the originating test_run/test_result.
+      -- Owned by website/src/lib/systemtest/db.ts (`ensureSystemtestSchema`); we
+      -- mirror the column adds + FKs here so a fresh DB has the linkage in place
+      -- as soon as both test_runs and tickets.tickets exist. Guarded by a
+      -- to_regclass() check because tickets.tickets is created at app boot,
+      -- not in this script.
+      DO $$
+      BEGIN
+        IF to_regclass('tickets.tickets') IS NOT NULL THEN
+          ALTER TABLE tickets.tickets
+            ADD COLUMN IF NOT EXISTS source_test_run_id    TEXT,
+            ADD COLUMN IF NOT EXISTS source_test_result_id BIGINT,
+            ADD COLUMN IF NOT EXISTS source_test_id        TEXT;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tickets_source_test_run_fk') THEN
+            ALTER TABLE tickets.tickets
+              ADD CONSTRAINT tickets_source_test_run_fk
+              FOREIGN KEY (source_test_run_id) REFERENCES test_runs(id) ON DELETE SET NULL;
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tickets_source_test_result_fk') THEN
+            ALTER TABLE tickets.tickets
+              ADD CONSTRAINT tickets_source_test_result_fk
+              FOREIGN KEY (source_test_result_id) REFERENCES test_results(id) ON DELETE SET NULL;
+          END IF;
+          CREATE UNIQUE INDEX IF NOT EXISTS tickets_one_open_per_test_run_test_uq
+            ON tickets.tickets (source_test_run_id, source_test_id)
+            WHERE source_test_run_id IS NOT NULL
+              AND source_test_id     IS NOT NULL
+              AND status NOT IN ('done','archived');
+          CREATE INDEX IF NOT EXISTS tickets_source_test_run_idx
+            ON tickets.tickets (source_test_run_id)
+            WHERE source_test_run_id IS NOT NULL;
+        END IF;
+      END$$;
+
+      -- ── Prompt Library (F2 — reusable canned replies) ─────────────────
+      -- Brand-scoped reusable prompts inserted into the messaging compose box.
+      -- Additive, idempotent. NO FK to public.brands on purpose: avoids the
+      -- known korczewski bootstrap gap where a fresh deploy has not yet seeded
+      -- the brands table. The DB layer (prompt-library-db.ts) also self-heals
+      -- this schema on the query path (T000406 lesson).
+      CREATE TABLE IF NOT EXISTS prompt_library (
+          id           SERIAL PRIMARY KEY,
+          brand        TEXT NOT NULL,
+          category     TEXT NOT NULL DEFAULT 'canned_reply',
+          title        TEXT NOT NULL,
+          body         TEXT NOT NULL,
+          description  TEXT,
+          is_active    BOOLEAN DEFAULT true,
+          usage_count  INTEGER DEFAULT 0,
+          created_by   TEXT,
+          created_at   TIMESTAMPTZ DEFAULT now(),
+          updated_at   TIMESTAMPTZ DEFAULT now(),
+          is_test_data BOOLEAN DEFAULT false,
+          UNIQUE (brand, title)
+      );
+      CREATE INDEX IF NOT EXISTS idx_prompt_library_brand_active
+          ON prompt_library (brand) WHERE is_active;
+
+      -- Grant full access to the website user
+      GRANT ALL ON ALL TABLES IN SCHEMA public TO website;
+      GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO website;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO website;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO website;
+
+      -- Change ownership of all tables and sequences in public schema to website
+      DO $$
+      DECLARE
+          r RECORD;
+      BEGIN
+          FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP
+              EXECUTE 'ALTER TABLE ' || quote_ident(r.tablename) || ' OWNER TO website';
+          END LOOP;
+          FOR r IN (SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public') LOOP
+              EXECUTE 'ALTER SEQUENCE ' || quote_ident(r.sequence_name) || ' OWNER TO website';
+          END LOOP;
+      END $$;
+    EOSQL
+
+    echo "Meetings schema initialized."
+  ensure-meetings-schema.sh: |
+    #!/bin/bash
+    set -e
+    echo "Ensuring meetings schema is up to date..."
+
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "${WEBSITE_SCHEMA_DB:-website}" <<-'EOSQL'
+      ALTER TABLE IF EXISTS chat_messages DROP COLUMN IF EXISTS sender_name;
+    EOSQL
+
+    psql -v ON_ERROR_STOP=1 --username "postgres" --dbname "${WEBSITE_SCHEMA_DB:-website}" <<-'EOSQL'
+      -- staleness_reports was dropped 2026-05-08 (testing pipeline overhaul, Task A9).
+      -- The table is no longer created by the init script; this DROP cleans up any
+      -- existing copy on clusters that ran an older schema. Idempotent — safe to
+      -- leave indefinitely. Future operators see "this table was deliberately dropped".
+      DROP TABLE IF EXISTS staleness_reports CASCADE;
+
+      CREATE SEQUENCE IF NOT EXISTS customer_number_seq START 20;
+
+      DO $$
+      BEGIN
+        IF (SELECT CASE WHEN is_called THEN last_value + 1 ELSE last_value END
+            FROM customer_number_seq) < 20 THEN
+          PERFORM setval('customer_number_seq', 20, false);
+        END IF;
+      END $$;
+
+
+      CREATE TABLE IF NOT EXISTS brands (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL
+      );
+      INSERT INTO brands (id, name) VALUES ('mentolder', 'Mentolder'), ('korczewski', 'Korczewski') ON CONFLICT DO NOTHING;
+
+      -- db-backup runs `pg_dump -U website -d website`. Schemas whose tables
+      -- are owned by another role (postgres) fail "permission denied for
+      -- table ..." mid-dump, marking the whole CronJob Failed.
+      -- Grant website read access on every backup-relevant schema so the dump
+      -- covers the full DB. Guarded per schema so it is a no-op when a schema
+      -- is absent. Idempotent; re-applies on every cluster reset. [T000403]
+      DO $$
+      DECLARE
+        s TEXT;
+      BEGIN
+        FOREACH s IN ARRAY ARRAY['public','bugs','bachelorprojekt','platform','meetings','audit'] LOOP
+          IF EXISTS (SELECT FROM pg_namespace WHERE nspname = s) THEN
+            EXECUTE format('GRANT USAGE ON SCHEMA %I TO website', s);
+            EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA %I TO website', s);
+            EXECUTE format('GRANT SELECT ON ALL SEQUENCES IN SCHEMA %I TO website', s);
+            EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT ON TABLES TO website', s);
+            EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT ON SEQUENCES TO website', s);
+          END IF;
+        END LOOP;
+      END $$;
+
+      CREATE TABLE IF NOT EXISTS customers (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          name TEXT NOT NULL,
+          email TEXT NOT NULL UNIQUE,
+          phone TEXT,
+          company TEXT,
+          keycloak_user_id TEXT,
+          created_at TIMESTAMPTZ DEFAULT now(),
+          updated_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      ALTER TABLE customers ADD COLUMN IF NOT EXISTS customer_number TEXT UNIQUE;
+      UPDATE customers SET customer_number = 'M' || LPAD(nextval('customer_number_seq')::text, 4, '0') WHERE customer_number IS NULL;
+      ALTER TABLE customers ALTER COLUMN customer_number SET DEFAULT 'M' || LPAD(nextval('customer_number_seq')::text, 4, '0');
+
+      ALTER TABLE customers ADD COLUMN IF NOT EXISTS enrollment_declined BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;
+      ALTER TABLE customers ADD COLUMN IF NOT EXISTS admin_number TEXT UNIQUE;
+
+      CREATE TABLE IF NOT EXISTS meetings (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          customer_id UUID NOT NULL REFERENCES customers(id),
+          meeting_type TEXT NOT NULL,
+          scheduled_at TIMESTAMPTZ,
+          started_at TIMESTAMPTZ,
+          ended_at TIMESTAMPTZ,
+          duration_seconds INTEGER,
+          talk_room_token TEXT,
+          recording_path TEXT,
+          status TEXT DEFAULT 'scheduled'
+              CHECK (status IN ('scheduled','active','ended','transcribed','finalized')),
+          created_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      -- Columns added after initial schema; safe to run on existing tables.
+      ALTER TABLE meetings ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ;
+      ALTER TABLE meetings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+      -- project_id FK to tickets.tickets is added lazily by the app when
+      -- tickets schema is ready (initMeetingProjectLink). This mirrors that
+      -- migration so it lands on startup even before any TypeScript path runs.
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.tables
+          WHERE table_schema = 'tickets' AND table_name = 'tickets'
+        ) AND NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'meetings' AND column_name = 'project_id'
+          AND table_schema = 'public'
+        ) THEN
+          ALTER TABLE meetings ADD COLUMN project_id UUID REFERENCES tickets.tickets(id) ON DELETE SET NULL;
+          CREATE INDEX IF NOT EXISTS idx_meetings_project ON meetings(project_id);
+        END IF;
+      END $$;
+
+      CREATE TABLE IF NOT EXISTS transcripts (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          meeting_id UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+          full_text TEXT NOT NULL,
+          language TEXT DEFAULT 'de',
+          whisper_model TEXT DEFAULT 'Systran/faster-whisper-medium',
+          duration_seconds NUMERIC,
+          created_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS transcript_segments (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          transcript_id UUID NOT NULL REFERENCES transcripts(id) ON DELETE CASCADE,
+          segment_index INTEGER NOT NULL,
+          start_time NUMERIC NOT NULL,
+          end_time NUMERIC NOT NULL,
+          text TEXT NOT NULL,
+          speaker TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS meeting_artifacts (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          meeting_id UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+          artifact_type TEXT NOT NULL
+              CHECK (artifact_type IN ('whiteboard','document','screenshot','file')),
+          name TEXT NOT NULL,
+          storage_path TEXT,
+          content_text TEXT,
+          metadata JSONB DEFAULT '{}',
+          created_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS meeting_insights (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          meeting_id UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+          insight_type TEXT NOT NULL
+              CHECK (insight_type IN ('summary','action_items','key_topics','sentiment','coaching_notes')),
+          content TEXT NOT NULL,
+          generated_by TEXT DEFAULT 'claude',
+          created_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      CREATE SCHEMA IF NOT EXISTS bugs AUTHORIZATION website;
+
+      -- One-time migration: move any pre-existing public.bug_tickets into bugs.bug_tickets.
+      DO $mig$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'bug_tickets')
+           AND NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'bugs' AND tablename = 'bug_tickets') THEN
+          EXECUTE 'ALTER TABLE public.bug_tickets SET SCHEMA bugs';
+        END IF;
+      END $mig$;
+
+      CREATE TABLE IF NOT EXISTS bugs.bug_tickets (
+          ticket_id       TEXT PRIMARY KEY,
+          status          TEXT NOT NULL DEFAULT 'open'
+              CHECK (status IN ('open', 'resolved', 'archived')),
+          category        TEXT NOT NULL,
+          reporter_email  TEXT NOT NULL,
+          description     TEXT NOT NULL,
+          url             TEXT,
+          brand           TEXT REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT NOT NULL,
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          resolved_at     TIMESTAMPTZ,
+          resolution_note TEXT
+      );
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'bug_tickets_brand_fkey') THEN
+          ALTER TABLE bugs.bug_tickets ADD CONSTRAINT bug_tickets_brand_fkey FOREIGN KEY (brand) REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+        END IF;
+      END $$;
+
+      CREATE INDEX IF NOT EXISTS idx_bug_tickets_status ON bugs.bug_tickets(status);
+      ALTER TABLE bugs.bug_tickets OWNER TO website;
+      ALTER TABLE bugs.bug_tickets
+        ADD COLUMN IF NOT EXISTS screenshots_json JSONB,
+        ADD COLUMN IF NOT EXISTS fixed_in_pr      INTEGER,
+        ADD COLUMN IF NOT EXISTS fixed_at         TIMESTAMPTZ;
+      CREATE INDEX IF NOT EXISTS idx_bug_tickets_fixed_in_pr ON bugs.bug_tickets (fixed_in_pr);
+
+      -- ── Security Audit Log ──────────────────────────────────────────
+      CREATE SCHEMA IF NOT EXISTS audit AUTHORIZATION website;
+
+      CREATE TABLE IF NOT EXISTS audit.audit_log (
+        id          bigserial PRIMARY KEY,
+        actor_id    text,
+        actor_email text,
+        action      text NOT NULL,
+        target_type text,
+        target_id   text,
+        ip          inet,
+        ts          timestamptz NOT NULL DEFAULT now(),
+        metadata    jsonb
+      );
+      ALTER TABLE audit.audit_log OWNER TO website;
+      CREATE INDEX IF NOT EXISTS audit_log_ts_idx ON audit.audit_log (ts DESC);
+      CREATE INDEX IF NOT EXISTS audit_log_actor_idx ON audit.audit_log (actor_id, ts DESC);
+      CREATE INDEX IF NOT EXISTS audit_log_action_idx ON audit.audit_log (action, ts DESC);
+
+      -- ── Coaching Knowledge Pipeline ─────────────────────────────────
+      CREATE SCHEMA IF NOT EXISTS coaching AUTHORIZATION website;
+      -- Switch to the application role so all objects are owned by website.
+      SET ROLE website;
+
+      CREATE TABLE IF NOT EXISTS coaching.books (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        knowledge_collection_id UUID NOT NULL REFERENCES knowledge.collections(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        author TEXT,
+        source_filename TEXT NOT NULL,
+        license_note TEXT,
+        ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (knowledge_collection_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS coaching.snippet_clusters (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        book_id UUID REFERENCES coaching.books(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'manual' CHECK (kind IN ('auto','manual')),
+        parent_id UUID REFERENCES coaching.snippet_clusters(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (book_id, name)
+      );
+
+      CREATE TABLE IF NOT EXISTS coaching.snippets (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        book_id UUID NOT NULL REFERENCES coaching.books(id) ON DELETE CASCADE,
+        knowledge_chunk_id UUID REFERENCES knowledge.chunks(id) ON DELETE SET NULL,
+        cluster_id UUID REFERENCES coaching.snippet_clusters(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        tags TEXT[] NOT NULL DEFAULT '{}',
+        page INT,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        created_from_draft UUID
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_snippets_book_id ON coaching.snippets(book_id);
+      CREATE INDEX IF NOT EXISTS idx_snippets_cluster_id ON coaching.snippets(cluster_id);
+      CREATE INDEX IF NOT EXISTS idx_snippets_tags ON coaching.snippets USING GIN(tags);
+
+      CREATE TABLE IF NOT EXISTS coaching.templates (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        snippet_id UUID NOT NULL REFERENCES coaching.snippets(id) ON DELETE CASCADE,
+        target_surface TEXT NOT NULL CHECK (target_surface IN ('questionnaire','brett','chatroom','assistant')),
+        version INT NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','published','archived')),
+        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+        source_pointer JSONB NOT NULL,
+        surface_ref TEXT,
+        published_at TIMESTAMPTZ,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (snippet_id, target_surface, version)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_templates_snippet_id ON coaching.templates(snippet_id);
+      CREATE INDEX IF NOT EXISTS idx_templates_surface_status ON coaching.templates(target_surface, status);
+      CREATE INDEX IF NOT EXISTS idx_templates_surface_ref ON coaching.templates(surface_ref);
+
+      CREATE TABLE IF NOT EXISTS coaching.template_assignments (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        template_id UUID NOT NULL REFERENCES coaching.templates(id) ON DELETE CASCADE,
+        template_version INT NOT NULL,
+        client_id TEXT NOT NULL,
+        surface_specific_id TEXT,
+        assigned_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_assignments_template_id ON coaching.template_assignments(template_id);
+      CREATE INDEX IF NOT EXISTS idx_assignments_client_id ON coaching.template_assignments(client_id);
+
+      CREATE TABLE IF NOT EXISTS coaching.drafts (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        book_id UUID NOT NULL REFERENCES coaching.books(id) ON DELETE CASCADE,
+        knowledge_chunk_id UUID NOT NULL REFERENCES knowledge.chunks(id) ON DELETE CASCADE,
+        template_kind TEXT NOT NULL CHECK (template_kind IN ('reflection','dialog_pattern','exercise','case_example')),
+        suggested_payload JSONB NOT NULL,
+        classifier_model TEXT NOT NULL,
+        classifier_version TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','accepted','rejected','skipped')),
+        reviewed_by TEXT,
+        reviewed_at TIMESTAMPTZ,
+        reject_reason TEXT,
+        resulting_snippet_id UUID REFERENCES coaching.snippets(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (knowledge_chunk_id, classifier_version)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_drafts_book_status ON coaching.drafts(book_id, status);
+      CREATE INDEX IF NOT EXISTS idx_drafts_kind_status ON coaching.drafts(template_kind, status);
+
+      CREATE TABLE IF NOT EXISTS coaching.sessions (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        brand         TEXT REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT NOT NULL DEFAULT 'mentolder',
+        client_id     UUID REFERENCES public.customers(id) ON DELETE SET NULL,
+        client_name   TEXT,
+        mode          TEXT NOT NULL DEFAULT 'live' CHECK (mode IN ('live','prep')),
+        title         TEXT NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active','paused','completed','abandoned')),
+        created_by    TEXT NOT NULL,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+        completed_at  TIMESTAMPTZ,
+        archived_at   TIMESTAMPTZ,
+        llm_summary   TEXT,
+        llm_summary_at TIMESTAMPTZ
+      );
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sessions_brand_fkey') THEN
+          ALTER TABLE coaching.sessions ADD CONSTRAINT sessions_brand_fkey FOREIGN KEY (brand) REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+        END IF;
+      END $$;
+      ALTER TABLE coaching.sessions ADD COLUMN IF NOT EXISTS client_name TEXT;
+      ALTER TABLE coaching.sessions ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'sessions_status_check'
+            AND conrelid = 'coaching.sessions'::regclass
+        ) THEN
+          ALTER TABLE coaching.sessions DROP CONSTRAINT sessions_status_check;
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'sessions_status_check'
+            AND conrelid = 'coaching.sessions'::regclass
+        ) THEN
+          ALTER TABLE coaching.sessions
+            ADD CONSTRAINT sessions_status_check
+            CHECK (status IN ('active','paused','completed','abandoned'));
+        END IF;
+      END $$;
+      CREATE INDEX IF NOT EXISTS idx_sessions_brand ON coaching.sessions(brand);
+      CREATE INDEX IF NOT EXISTS idx_sessions_client ON coaching.sessions(client_id);
+
+      CREATE TABLE IF NOT EXISTS coaching.questionnaire_insights_cache (
+        key         TEXT PRIMARY KEY,
+        payload     JSONB NOT NULL,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS coaching.session_steps (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id    UUID NOT NULL REFERENCES coaching.sessions(id) ON DELETE CASCADE,
+        step_number   INT NOT NULL,
+        step_name     TEXT NOT NULL,
+        phase         TEXT NOT NULL CHECK (phase IN ('problem_ziel','analyse','loesung','umsetzung')),
+        coach_inputs  JSONB NOT NULL DEFAULT '{}',
+        ai_prompt     TEXT,
+        ai_response   TEXT,
+        coach_notes   TEXT,
+        status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','generated','accepted','skipped')),
+        generated_at  TIMESTAMPTZ,
+        UNIQUE (session_id, step_number)
+      );
+
+      CREATE TABLE IF NOT EXISTS coaching.session_audit_log (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id  UUID NOT NULL REFERENCES coaching.sessions(id) ON DELETE CASCADE,
+        event_type  TEXT NOT NULL
+                      CHECK (event_type IN
+                        ('status_change','field_change','ai_request','notes_change')),
+        actor       TEXT NOT NULL,
+        step_number INT,
+        payload     JSONB NOT NULL DEFAULT '{}',
+        changed_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_session
+        ON coaching.session_audit_log(session_id, changed_at DESC);
+
+      CREATE TABLE IF NOT EXISTS coaching.ki_config (
+        id           SERIAL PRIMARY KEY,
+        brand        TEXT NOT NULL,
+        provider     TEXT NOT NULL
+                       CHECK (provider IN ('claude','openai','mistral','lumo')),
+        is_active    BOOLEAN NOT NULL DEFAULT false,
+        model_name   TEXT,
+        display_name TEXT NOT NULL,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (brand, provider)
+      );
+      INSERT INTO coaching.ki_config (brand, provider, is_active, model_name, display_name)
+      VALUES
+        ('mentolder',  'claude',  true,  'claude-haiku-4-5-20251001','Claude (Anthropic)'),
+        ('mentolder',  'openai',  false, 'gpt-4o-mini',              'ChatGPT (OpenAI)'),
+        ('mentolder',  'mistral', false, 'mistral-small-latest',     'Mistral'),
+        ('mentolder',  'lumo',    false, null,                       'Lumo'),
+        ('korczewski', 'claude',  true,  'claude-haiku-4-5-20251001','Claude (Anthropic)'),
+        ('korczewski', 'openai',  false, 'gpt-4o-mini',              'ChatGPT (OpenAI)'),
+        ('korczewski', 'mistral', false, 'mistral-small-latest',     'Mistral'),
+        ('korczewski', 'lumo',    false, null,                       'Lumo')
+      ON CONFLICT (brand, provider) DO NOTHING;
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_ki_config_one_active_per_brand
+        ON coaching.ki_config (brand)
+        WHERE is_active = true;
+
+      CREATE TABLE IF NOT EXISTS coaching.step_templates (
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        brand            TEXT NOT NULL,
+        step_number      INT NOT NULL,
+        step_name        TEXT NOT NULL,
+        phase            TEXT NOT NULL CHECK (phase IN ('problem_ziel','analyse','loesung','umsetzung')),
+        system_prompt    TEXT NOT NULL,
+        user_prompt_tpl  TEXT NOT NULL,
+        input_schema     JSONB NOT NULL DEFAULT '[]',
+        keywords         TEXT[] NOT NULL DEFAULT '{}',
+        is_active        BOOLEAN NOT NULL DEFAULT true,
+        sort_order       INT NOT NULL DEFAULT 0,
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (brand, step_number)
+      );
+
+      -- ── Learning Progress Tracking ──────────────────────────────────
+      CREATE TABLE IF NOT EXISTS learning_progress (
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        keycloak_user_id TEXT NOT NULL,
+        brand            TEXT NOT NULL DEFAULT 'mentolder'
+                           REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+        item_type        TEXT NOT NULL CHECK (item_type IN ('goal','tool')),
+        item_id          TEXT NOT NULL,
+        status           TEXT NOT NULL DEFAULT 'todo'
+                           CHECK (status IN ('todo','in_progress','done')),
+        note             TEXT,
+        started_at       TIMESTAMPTZ,
+        completed_at     TIMESTAMPTZ,
+        updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (keycloak_user_id, brand, item_type, item_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_learning_progress_admin_agg
+        ON learning_progress (brand, keycloak_user_id);
+      CREATE INDEX IF NOT EXISTS idx_learning_progress_updated
+        ON learning_progress (updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS onboarding_state (
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        keycloak_user_id TEXT NOT NULL,
+        brand            TEXT NOT NULL DEFAULT 'mentolder'
+                           REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+        step_id          TEXT NOT NULL,
+        completed_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (keycloak_user_id, brand, step_id)
+      );
+
+      -- Revert to superuser to run GRANTs (website role cannot GRANT to itself).
+      RESET ROLE;
+      GRANT USAGE ON SCHEMA coaching TO website;
+      GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA coaching TO website;
+      GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA coaching TO website;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA coaching GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO website;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA coaching GRANT USAGE, SELECT ON SEQUENCES TO website;
+
+      -- KI-Provider-Profile: erweiterte Konfigurationsfelder (idempotent)
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS api_key TEXT;
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS api_endpoint TEXT;
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS temperature NUMERIC(5,3);
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS max_tokens INT;
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS top_p NUMERIC(5,3);
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS system_prompt TEXT;
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS notes TEXT;
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS top_k INT;
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS thinking_mode BOOLEAN NOT NULL DEFAULT false;
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS presence_penalty NUMERIC(5,3);
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS frequency_penalty NUMERIC(5,3);
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS safe_prompt BOOLEAN NOT NULL DEFAULT false;
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS random_seed INT;
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS organization_id TEXT;
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS eu_endpoint BOOLEAN NOT NULL DEFAULT false;
+
+      -- Custom KI-Anbieter: CHECK-Constraint entfernen + enabled_fields (idempotent)
+      DO $$
+      DECLARE v_con text;
+      BEGIN
+        SELECT c.conname INTO v_con
+        FROM pg_constraint c
+        JOIN pg_class t ON c.conrelid = t.oid
+        JOIN pg_namespace n ON t.relnamespace = n.oid
+        WHERE n.nspname = 'coaching' AND t.relname = 'ki_config'
+          AND c.contype = 'c' AND c.conname LIKE '%provider%'
+        LIMIT 1;
+        IF v_con IS NOT NULL THEN
+          EXECUTE 'ALTER TABLE coaching.ki_config DROP CONSTRAINT ' || quote_ident(v_con);
+        END IF;
+      END $$;
+      ALTER TABLE coaching.ki_config ADD COLUMN IF NOT EXISTS enabled_fields JSONB;
+
+      -- Per-Session KI-Auswahl
+      ALTER TABLE coaching.sessions ADD COLUMN IF NOT EXISTS ki_config_id INT REFERENCES coaching.ki_config(id) ON DELETE SET NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_meetings_customer ON meetings(customer_id);
+      CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings(status);
+      CREATE INDEX IF NOT EXISTS idx_transcripts_meeting ON transcripts(meeting_id);
+      CREATE INDEX IF NOT EXISTS idx_segments_transcript ON transcript_segments(transcript_id);
+      CREATE INDEX IF NOT EXISTS idx_artifacts_meeting ON meeting_artifacts(meeting_id);
+      CREATE INDEX IF NOT EXISTS idx_insights_meeting ON meeting_insights(meeting_id);
+      CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email);
+
+      CREATE TABLE IF NOT EXISTS inbox_items (
+        id              SERIAL PRIMARY KEY,
+        type            TEXT NOT NULL CHECK (type IN ('registration','booking','contact','bug','meeting_finalize','user_message')),
+        status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','actioned','archived')),
+        reference_id    TEXT,
+        reference_table TEXT,
+        -- bug_ticket_id keeps the tickets.tickets(external_id) slug (e.g. T000287,
+        -- BR-YYYYMMDD-xxxx). The FK is installed *after* tickets.tickets exists,
+        -- below — bootstrap-safe on fresh DBs where tickets-db.ts has not yet
+        -- run.
+        bug_ticket_id   TEXT,
+        payload         JSONB,
+        created_at      TIMESTAMPTZ DEFAULT now(),
+        actioned_at     TIMESTAMPTZ,
+        actioned_by     TEXT
+      );
+      ALTER TABLE inbox_items ADD COLUMN IF NOT EXISTS is_test_data BOOLEAN NOT NULL DEFAULT false;
+      CREATE INDEX IF NOT EXISTS idx_inbox_items_status ON inbox_items(status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_inbox_items_is_test_data
+        ON inbox_items (is_test_data) WHERE is_test_data = true;
+
+      -- inbox_items.bug_ticket_id FK repoint (2026-05-12).
+      -- Pre-sunset, this column FK'd into bugs.bug_tickets(ticket_id). Sunset
+      -- dropped that FK, leaving inbox_items orphan-prone after
+      -- tickets.fn_purge_test_data() deletes from tickets.tickets directly.
+      -- Re-add the FK against the new authoritative store with CASCADE.
+      -- Guarded so a partial fresh-DB run (tickets schema not yet bootstrapped)
+      -- doesn't abort the whole schema init.
+      DO $inbox_fk$
+      BEGIN
+        IF to_regclass('tickets.tickets') IS NOT NULL THEN
+          ALTER TABLE inbox_items
+            DROP CONSTRAINT IF EXISTS inbox_items_bug_ticket_id_fkey;
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+             WHERE conname = 'inbox_items_bug_ticket_fkey'
+               AND conrelid = 'public.inbox_items'::regclass
+          ) THEN
+            -- NULL out orphans first so the FK can attach.
+            UPDATE inbox_items
+               SET bug_ticket_id = NULL
+             WHERE bug_ticket_id IS NOT NULL
+               AND NOT EXISTS (
+                     SELECT 1 FROM tickets.tickets t
+                      WHERE t.external_id = inbox_items.bug_ticket_id
+                   );
+            ALTER TABLE inbox_items
+              ADD CONSTRAINT inbox_items_bug_ticket_fkey
+              FOREIGN KEY (bug_ticket_id)
+              REFERENCES tickets.tickets(external_id)
+              ON DELETE CASCADE;
+          END IF;
+        END IF;
+      END $inbox_fk$;
+
+      CREATE TABLE IF NOT EXISTS message_threads (
+        id              SERIAL PRIMARY KEY,
+        customer_id     UUID REFERENCES customers(id),
+        subject         TEXT,
+        created_at      TIMESTAMPTZ DEFAULT now(),
+        last_message_at TIMESTAMPTZ DEFAULT now()
+      );
+      ALTER TABLE message_threads ADD COLUMN IF NOT EXISTS is_test_data BOOLEAN NOT NULL DEFAULT false;
+      CREATE INDEX IF NOT EXISTS idx_message_threads_is_test_data
+        ON message_threads (is_test_data) WHERE is_test_data = true;
+
+      CREATE TABLE IF NOT EXISTS messages (
+        id                   SERIAL PRIMARY KEY,
+        thread_id            INT NOT NULL REFERENCES message_threads(id),
+        sender_id            TEXT NOT NULL,
+        sender_role          TEXT NOT NULL CHECK (sender_role IN ('admin','user')),
+        sender_customer_id   UUID REFERENCES customers(id) ON DELETE SET NULL,
+        body                 TEXT NOT NULL,
+        created_at           TIMESTAMPTZ DEFAULT now(),
+        read_at              TIMESTAMPTZ,
+        notification_sent_at TIMESTAMPTZ,
+        CHECK (sender_role = 'admin' OR sender_customer_id IS NOT NULL)
+      );
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_test_data BOOLEAN NOT NULL DEFAULT false;
+      CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, id ASC);
+      CREATE INDEX IF NOT EXISTS idx_messages_is_test_data
+        ON messages (is_test_data) WHERE is_test_data = true;
+
+      -- ── Admin Actions Audit Trail ───────────────────────────────────
+      -- Mirrors components/website/src/db/migrations/20260525_admin_actions.sql
+      -- so fresh/restored staging DBs gain the table on every boot without a
+      -- manual `pnpm db:migrate` (the admin-actions-cleanup CronJob UPDATEs /
+      -- DELETEs this table). Idempotent. [T900819]
+      CREATE TABLE IF NOT EXISTS public.admin_actions (
+        id            serial PRIMARY KEY,
+        actor         text NOT NULL,
+        action        text NOT NULL,
+        target        text,
+        cluster       text,
+        payload       jsonb,
+        status        text NOT NULL CHECK (status IN ('in_progress','success','failed','partial_success')),
+        error         text,
+        created_at    timestamptz NOT NULL DEFAULT now(),
+        completed_at  timestamptz
+      );
+      CREATE INDEX IF NOT EXISTS admin_actions_created_at_idx
+        ON public.admin_actions (created_at DESC);
+      CREATE INDEX IF NOT EXISTS admin_actions_concurrent_idx
+        ON public.admin_actions (action, target, status)
+        WHERE status = 'in_progress';
+      CREATE INDEX IF NOT EXISTS admin_actions_actor_idx
+        ON public.admin_actions (actor, created_at DESC);
+      ALTER TABLE public.admin_actions OWNER TO website;
+      GRANT SELECT, INSERT, UPDATE ON public.admin_actions TO website;
+      GRANT USAGE, SELECT ON SEQUENCE public.admin_actions_id_seq TO website;
+
+      -- ── Error Log ───────────────────────────────────────────────────
+      -- Mirrors components/website/src/db/migrations/20260703_create_error_log.sql
+      -- (T001594) so persistError() never hits a missing table. Idempotent. [T900819]
+      CREATE TABLE IF NOT EXISTS error_log (
+        id bigserial PRIMARY KEY,
+        ts timestamptz DEFAULT now(),
+        source text CHECK(source IN ('server', 'browser', 'pod')),
+        message text NOT NULL,
+        namespace text,
+        pod_name text,
+        meta jsonb DEFAULT '{}'::jsonb
+      );
+      ALTER TABLE error_log OWNER TO website;
+      CREATE INDEX IF NOT EXISTS error_log_ts_idx ON error_log (ts DESC);
+      GRANT SELECT, INSERT, DELETE ON error_log TO website;
+      GRANT USAGE, SELECT ON SEQUENCE error_log_id_seq TO website;
+
+      CREATE TABLE IF NOT EXISTS chat_rooms (
+        id                  SERIAL PRIMARY KEY,
+        name                TEXT NOT NULL,
+        created_by          TEXT NOT NULL,
+        created_at          TIMESTAMPTZ DEFAULT now(),
+        archived_at         TIMESTAMPTZ,
+        is_direct           BOOLEAN NOT NULL DEFAULT FALSE,
+        direct_customer_id  UUID REFERENCES customers(id) ON DELETE SET NULL
+      );
+      ALTER TABLE chat_rooms ADD COLUMN IF NOT EXISTS is_direct BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE chat_rooms ADD COLUMN IF NOT EXISTS direct_customer_id UUID REFERENCES customers(id) ON DELETE SET NULL;
+
+      CREATE TABLE IF NOT EXISTS chat_room_members (
+        room_id     INT NOT NULL REFERENCES chat_rooms(id),
+        customer_id UUID NOT NULL REFERENCES customers(id),
+        joined_at   TIMESTAMPTZ DEFAULT now(),
+        PRIMARY KEY (room_id, customer_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS chat_messages (
+        id                   SERIAL PRIMARY KEY,
+        room_id              INT NOT NULL REFERENCES chat_rooms(id),
+        sender_id            TEXT NOT NULL,
+        sender_customer_id   UUID REFERENCES customers(id) ON DELETE SET NULL,
+        body                 TEXT NOT NULL,
+        created_at           TIMESTAMPTZ DEFAULT now(),
+        notification_sent_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS idx_chat_messages_room ON chat_messages(room_id, id ASC);
+
+      CREATE TABLE IF NOT EXISTS chat_message_reads (
+        message_id  INT NOT NULL REFERENCES chat_messages(id),
+        customer_id UUID NOT NULL REFERENCES customers(id),
+        read_at     TIMESTAMPTZ DEFAULT now(),
+        PRIMARY KEY (message_id, customer_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS document_templates (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        title TEXT NOT NULL,
+        html_body TEXT NOT NULL,
+        docuseal_template_id INTEGER,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS document_assignments (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+        template_id UUID NOT NULL REFERENCES document_templates(id) ON DELETE CASCADE,
+        docuseal_submission_slug TEXT,
+        docuseal_embed_src TEXT,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'completed', 'expired')),
+        assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        signed_at TIMESTAMPTZ
+      );
+
+      ALTER TABLE document_assignments ADD COLUMN IF NOT EXISTS docuseal_template_id INTEGER;
+      ALTER TABLE document_templates ADD COLUMN IF NOT EXISTS stand_date TEXT;
+
+      CREATE INDEX IF NOT EXISTS idx_doc_assignments_customer ON document_assignments(customer_id);
+      CREATE INDEX IF NOT EXISTS idx_doc_assignments_status ON document_assignments(status);
+
+      -- ── Systemisches Brett ──────────────────────────────────────────
+
+      -- Layer 1: live state per Talk room. Overwritten as figures move.
+      CREATE TABLE IF NOT EXISTS brett_rooms (
+          room_token       TEXT PRIMARY KEY,
+          state            JSONB NOT NULL DEFAULT '{"figures":[]}'::jsonb,
+          last_modified_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      -- Layer 2: manual snapshots. Immutable, named, optionally linked to a customer.
+      CREATE TABLE IF NOT EXISTS brett_snapshots (
+          id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          room_token  TEXT,
+          customer_id UUID REFERENCES customers(id) ON DELETE SET NULL,
+          name        TEXT NOT NULL,
+          state       JSONB NOT NULL,
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_brett_snapshots_customer
+          ON brett_snapshots(customer_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_brett_snapshots_room
+          ON brett_snapshots(room_token, created_at DESC);
+
+      -- Szenario-Vorlagen (Phase D): curated snapshots flagged as templates.
+      -- Additive + idempotent — existing snapshots default to non-templates,
+      -- no row rewrite. No `brand` column (per-namespace DBs are physically
+      -- separate; YAGNI).
+      ALTER TABLE brett_snapshots ADD COLUMN IF NOT EXISTS is_template boolean NOT NULL DEFAULT false;
+      CREATE INDEX IF NOT EXISTS idx_brett_snapshots_template ON brett_snapshots(is_template) WHERE is_template;
+
+      -- Idempotency for auto-post on Talk-roomed meeting creation.
+      ALTER TABLE meetings
+          ADD COLUMN IF NOT EXISTS brett_link_posted_at TIMESTAMPTZ;
+
+      -- ── Live Poll System ──────────────────────────────────────────
+
+      CREATE TABLE IF NOT EXISTS polls (
+          id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          question    TEXT NOT NULL,
+          kind        TEXT NOT NULL CHECK (kind IN ('multiple_choice', 'text')),
+          options     TEXT[],
+          status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'locked')),
+          room_tokens TEXT[] NOT NULL DEFAULT '{}',
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+          locked_at   TIMESTAMPTZ,
+          CONSTRAINT polls_mc_options_not_null
+              CHECK (kind != 'multiple_choice' OR options IS NOT NULL)
+      );
+
+      CREATE TABLE IF NOT EXISTS poll_answers (
+          id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          poll_id      UUID NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+          answer       TEXT NOT NULL CHECK (char_length(answer) <= 1000),
+          submitted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_poll_answers_poll
+          ON poll_answers(poll_id, submitted_at DESC);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_polls_one_open
+          ON polls ((true)) WHERE status = 'open';
+
+      -- ── Test Runs / Test Results ─────────────────────────────────────────
+      CREATE TABLE IF NOT EXISTS test_runs (
+        id           TEXT PRIMARY KEY,
+        tier         TEXT NOT NULL,
+        test_ids     TEXT,
+        cluster      TEXT NOT NULL,
+        started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        finished_at  TIMESTAMPTZ,
+        status       TEXT NOT NULL DEFAULT 'running',
+        pass         INT,
+        fail         INT,
+        skip         INT,
+        duration_ms  INT
+      );
+
+      CREATE TABLE IF NOT EXISTS test_results (
+        id          BIGSERIAL PRIMARY KEY,
+        run_id      TEXT NOT NULL REFERENCES test_runs(id) ON DELETE CASCADE,
+        test_id     TEXT NOT NULL,
+        category    TEXT NOT NULL,
+        status      TEXT NOT NULL,
+        duration_ms INT,
+        message     TEXT,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS test_results_test_id_created_idx ON test_results (test_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS test_results_run_id_idx ON test_results (run_id);
+
+      -- Linkback from triage tickets back to the originating test_run/test_result.
+      -- See ensureSystemtestSchema in website/src/lib/systemtest/db.ts for the
+      -- canonical owner. Mirrored here for fresh-DB ergonomics; idempotent.
+      DO $$
+      BEGIN
+        IF to_regclass('tickets.tickets') IS NOT NULL THEN
+          ALTER TABLE tickets.tickets
+            ADD COLUMN IF NOT EXISTS source_test_run_id    TEXT,
+            ADD COLUMN IF NOT EXISTS source_test_result_id BIGINT,
+            ADD COLUMN IF NOT EXISTS source_test_id        TEXT;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tickets_source_test_run_fk') THEN
+            ALTER TABLE tickets.tickets
+              ADD CONSTRAINT tickets_source_test_run_fk
+              FOREIGN KEY (source_test_run_id) REFERENCES test_runs(id) ON DELETE SET NULL;
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tickets_source_test_result_fk') THEN
+            ALTER TABLE tickets.tickets
+              ADD CONSTRAINT tickets_source_test_result_fk
+              FOREIGN KEY (source_test_result_id) REFERENCES test_results(id) ON DELETE SET NULL;
+          END IF;
+          CREATE UNIQUE INDEX IF NOT EXISTS tickets_one_open_per_test_run_test_uq
+            ON tickets.tickets (source_test_run_id, source_test_id)
+            WHERE source_test_run_id IS NOT NULL
+              AND source_test_id     IS NOT NULL
+              AND status NOT IN ('done','archived');
+          CREATE INDEX IF NOT EXISTS tickets_source_test_run_idx
+            ON tickets.tickets (source_test_run_id)
+            WHERE source_test_run_id IS NOT NULL;
+        END IF;
+      END$$;
+
+      -- ── Prompt Library (F2 — reusable canned replies) ─────────────────
+      -- Mirrors the additive table from the init script so existing DBs gain it
+      -- on every boot. Idempotent, no FK to public.brands (korczewski bootstrap
+      -- gap). See prompt-library-db.ts (also self-heals on the query path).
+      CREATE TABLE IF NOT EXISTS prompt_library (
+          id           SERIAL PRIMARY KEY,
+          brand        TEXT NOT NULL,
+          category     TEXT NOT NULL DEFAULT 'canned_reply',
+          title        TEXT NOT NULL,
+          body         TEXT NOT NULL,
+          description  TEXT,
+          is_active    BOOLEAN DEFAULT true,
+          usage_count  INTEGER DEFAULT 0,
+          created_by   TEXT,
+          created_at   TIMESTAMPTZ DEFAULT now(),
+          updated_at   TIMESTAMPTZ DEFAULT now(),
+          is_test_data BOOLEAN DEFAULT false,
+          UNIQUE (brand, title)
+      );
+      CREATE INDEX IF NOT EXISTS idx_prompt_library_brand_active
+          ON prompt_library (brand) WHERE is_active;
+
+      GRANT ALL ON ALL TABLES IN SCHEMA public TO website;
+      GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO website;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO website;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO website;
+
+      -- Change ownership of all tables and sequences in public schema to website
+      DO $$
+      DECLARE
+          r RECORD;
+      BEGIN
+          FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP
+              EXECUTE 'ALTER TABLE ' || quote_ident(r.tablename) || ' OWNER TO website';
+          END LOOP;
+          FOR r IN (SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public') LOOP
+              EXECUTE 'ALTER SEQUENCE ' || quote_ident(r.sequence_name) || ' OWNER TO website';
+          END LOOP;
+      END $$;
+    EOSQL
+
+    echo "Schema ensure complete."
+  ensure-bachelorprojekt-schema.sh: |
+    #!/bin/bash
+    set -e
+    echo "Ensuring bachelorprojekt schema is up to date..."
+
+    psql -v ON_ERROR_STOP=1 --username "postgres" --dbname website <<-'EOSQL'
+      CREATE SCHEMA IF NOT EXISTS bachelorprojekt;
+      ALTER SCHEMA bachelorprojekt OWNER TO website;
+      -- Switch to the application role so all objects are owned by website.
+      SET ROLE website;
+
+      CREATE TABLE IF NOT EXISTS bachelorprojekt.requirements (
+        id          TEXT PRIMARY KEY,
+        category    TEXT NOT NULL,
+        name        TEXT NOT NULL,
+        description TEXT,
+        criteria    TEXT,
+        test_case   TEXT,
+        created_at  TIMESTAMPTZ DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS bachelorprojekt.pipeline (
+        id         SERIAL PRIMARY KEY,
+        req_id     TEXT NOT NULL REFERENCES bachelorprojekt.requirements(id) ON DELETE CASCADE,
+        stage      TEXT NOT NULL CHECK (stage IN ('idea','implementation','testing','documentation','archive')),
+        entered_at TIMESTAMPTZ DEFAULT now(),
+        notes      TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS bachelorprojekt.test_results (
+        id      SERIAL PRIMARY KEY,
+        req_id  TEXT NOT NULL REFERENCES bachelorprojekt.requirements(id) ON DELETE CASCADE,
+        result  TEXT NOT NULL CHECK (result IN ('pass','fail','skip')),
+        run_at  TIMESTAMPTZ DEFAULT now(),
+        details TEXT
+      );
+
+      CREATE OR REPLACE VIEW bachelorprojekt.v_pipeline_status AS
+      SELECT
+        r.id, r.name, r.category,
+        COALESCE(p.stage, 'idea') AS current_stage,
+        p.entered_at AS stage_since
+      FROM bachelorprojekt.requirements r
+      LEFT JOIN bachelorprojekt.pipeline p
+        ON p.req_id = r.id
+        AND p.entered_at = (
+          SELECT MAX(p2.entered_at) FROM bachelorprojekt.pipeline p2 WHERE p2.req_id = r.id
+        );
+
+      CREATE OR REPLACE VIEW bachelorprojekt.v_progress_summary AS
+      SELECT current_stage AS stage, COUNT(*) AS count
+      FROM bachelorprojekt.v_pipeline_status
+      GROUP BY current_stage
+      ORDER BY ARRAY_POSITION(ARRAY['idea','implementation','testing','documentation','archive'], current_stage);
+
+      CREATE OR REPLACE VIEW bachelorprojekt.v_open_issues AS
+      SELECT *
+      FROM bachelorprojekt.v_pipeline_status
+      WHERE current_stage != 'archive'
+      ORDER BY category, id;
+
+      CREATE OR REPLACE VIEW bachelorprojekt.v_latest_tests AS
+      SELECT DISTINCT ON (req_id) req_id, result, run_at, details
+      FROM bachelorprojekt.test_results
+      ORDER BY req_id, run_at DESC;
+
+      CREATE TABLE IF NOT EXISTS bachelorprojekt.features (
+        id             SERIAL PRIMARY KEY,
+        pr_number      INTEGER,
+        title          TEXT NOT NULL,
+        description    TEXT,
+        category       TEXT NOT NULL DEFAULT 'feature',
+        scope          TEXT,
+        brand          TEXT REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+        requirement_id TEXT REFERENCES bachelorprojekt.requirements(id) ON DELETE SET NULL,
+        merged_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        merged_by      TEXT,
+        status         TEXT NOT NULL DEFAULT 'merged',
+        created_at     TIMESTAMPTZ DEFAULT now()
+      );
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'features_brand_fkey') THEN
+          ALTER TABLE bachelorprojekt.features ADD CONSTRAINT features_brand_fkey FOREIGN KEY (brand) REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+        END IF;
+      END $$;
+
+      CREATE OR REPLACE VIEW bachelorprojekt.v_timeline AS
+      SELECT f.id,
+             f.merged_at::date AS day,
+             f.merged_at,
+             f.pr_number,
+             f.title,
+             f.description,
+             f.category,
+             f.scope,
+             f.brand,
+             f.requirement_id,
+             r.name AS requirement_name,
+             r.category AS requirement_category
+        FROM bachelorprojekt.features f
+        LEFT JOIN bachelorprojekt.requirements r ON r.id = f.requirement_id
+       ORDER BY f.merged_at DESC;
+
+      -- software_events.pr_number referenziert features(pr_number); ohne UNIQUE lehnt
+      -- Postgres den FK ab und das Skript bricht hier ab [T901103].
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'features_pr_number_key') THEN
+          ALTER TABLE bachelorprojekt.features ADD CONSTRAINT features_pr_number_key UNIQUE (pr_number);
+        END IF;
+      END $$;
+
+      CREATE TABLE IF NOT EXISTS bachelorprojekt.software_events (
+        id             BIGSERIAL PRIMARY KEY,
+        pr_number      INTEGER NOT NULL REFERENCES bachelorprojekt.features(pr_number) ON DELETE CASCADE,
+        service        TEXT    NOT NULL,
+        area           TEXT    NOT NULL,
+        kind           TEXT    NOT NULL CHECK (kind IN ('added','removed','changed','irrelevant')),
+        confidence     NUMERIC(3,2) NOT NULL DEFAULT 1.0 CHECK (confidence >= 0 AND confidence <= 1),
+        classifier     TEXT    NOT NULL,
+        classified_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        notes          TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_software_events_pr      ON bachelorprojekt.software_events (pr_number);
+      CREATE INDEX IF NOT EXISTS idx_software_events_service ON bachelorprojekt.software_events (service);
+      CREATE INDEX IF NOT EXISTS idx_software_events_kind    ON bachelorprojekt.software_events (kind);
+
+      CREATE OR REPLACE VIEW bachelorprojekt.v_software_stack AS
+      WITH last_event AS (
+        SELECT DISTINCT ON (service)
+          service, area, kind, classified_at, pr_number
+        FROM bachelorprojekt.software_events
+        WHERE kind <> 'irrelevant'
+        ORDER BY service, classified_at DESC, id DESC
+      )
+      SELECT service, area, classified_at AS as_of, pr_number AS last_pr
+      FROM last_event
+      WHERE kind <> 'removed'
+      ORDER BY area, service;
+
+      CREATE OR REPLACE VIEW bachelorprojekt.v_software_history AS
+      SELECT
+        e.id,
+        e.pr_number,
+        f.merged_at,
+        f.title,
+        f.brand,
+        f.merged_by,
+        e.service,
+        e.area,
+        e.kind,
+        e.confidence,
+        e.classifier,
+        e.classified_at,
+        e.notes
+      FROM bachelorprojekt.software_events e
+      JOIN bachelorprojekt.features f ON f.pr_number = e.pr_number
+      WHERE e.kind <> 'irrelevant'
+      ORDER BY f.merged_at DESC, e.id DESC;
+
+      CREATE TABLE IF NOT EXISTS bachelorprojekt.components (
+        id         BIGSERIAL PRIMARY KEY,
+        name       TEXT NOT NULL,
+        kind       TEXT NOT NULL CHECK (kind IN ('physical','non-physical')),
+        area       TEXT NOT NULL,
+        status     TEXT NOT NULL DEFAULT 'active'
+                     CHECK (status IN ('active','inactive','deprecated')),
+        cluster    TEXT NOT NULL DEFAULT 'both'
+                     CHECK (cluster IN ('mentolder','korczewski','both')),
+        url        TEXT,
+        hostname   TEXT,
+        notes      TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_components_name
+        ON bachelorprojekt.components (lower(name));
+
+      -- Revert to superuser to run GRANTs (website role cannot GRANT to itself).
+      RESET ROLE;
+      GRANT USAGE ON SCHEMA bachelorprojekt TO website;
+      GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA bachelorprojekt TO website;
+      GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA bachelorprojekt TO website;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA bachelorprojekt GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO website;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA bachelorprojekt GRANT USAGE, SELECT ON SEQUENCES TO website;
+    EOSQL
+
+    echo "Bachelorprojekt schema ensure complete."
+
+  init-knowledge-schema.sh: |
+    #!/bin/bash
+    set -e
+    echo "Initializing knowledge schema..."
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname website <<-'EOSQL'
+      -- T016560: pgvector lebt nur noch in Dev; Prod-Ensure/Init ohne Extension.
+      CREATE SCHEMA IF NOT EXISTS knowledge AUTHORIZATION website;
+      -- Switch to the application role so all objects are owned by website.
+      SET ROLE website;
+
+      CREATE TABLE IF NOT EXISTS knowledge.collections (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name            TEXT NOT NULL UNIQUE,
+        description     TEXT,
+        source          TEXT NOT NULL CHECK (source IN
+                          ('pr_history','specs_plans','claude_md','bug_tickets','custom','web_crawl')),
+        crawl_config    JSONB,
+        brand           TEXT REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+        chunk_count     INT NOT NULL DEFAULT 0,
+        last_indexed_at TIMESTAMPTZ,
+        embedding_model TEXT NOT NULL DEFAULT 'bge-m3',
+        created_by      UUID,
+        created_at      TIMESTAMPTZ DEFAULT now()
+      );
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'collections_brand_fkey') THEN
+          ALTER TABLE knowledge.collections ADD CONSTRAINT collections_brand_fkey FOREIGN KEY (brand) REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+        END IF;
+      END $$;
+
+      CREATE TABLE IF NOT EXISTS knowledge.documents (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        collection_id UUID NOT NULL REFERENCES knowledge.collections(id) ON DELETE CASCADE,
+        title         TEXT NOT NULL,
+        source_uri    TEXT,
+        raw_text      TEXT NOT NULL,
+        sha256        TEXT,
+        metadata      JSONB DEFAULT '{}',
+        created_at    TIMESTAMPTZ DEFAULT now(),
+        UNIQUE (collection_id, source_uri)
+      );
+
+      CREATE TABLE IF NOT EXISTS knowledge.chunks (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        document_id   UUID NOT NULL REFERENCES knowledge.documents(id) ON DELETE CASCADE,
+        collection_id UUID NOT NULL REFERENCES knowledge.collections(id) ON DELETE CASCADE,
+        position      INT  NOT NULL,
+        text          TEXT NOT NULL,
+        metadata      JSONB DEFAULT '{}',
+        UNIQUE (document_id, position)
+      );
+
+      CREATE INDEX IF NOT EXISTS chunks_collection ON knowledge.chunks (collection_id);
+
+      -- Revert to superuser to run GRANTs (website role cannot GRANT to itself).
+      RESET ROLE;
+      GRANT USAGE ON SCHEMA knowledge TO website;
+      GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA knowledge TO website;
+      GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA knowledge TO website;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA knowledge GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO website;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA knowledge GRANT USAGE, SELECT ON SEQUENCES TO website;
+    EOSQL
+    echo "Knowledge schema initialized."
+
+  ensure-knowledge-schema.sh: |
+    #!/bin/bash
+    set -e
+    psql -v ON_ERROR_STOP=1 --username "postgres" --dbname website <<-'EOSQL'
+      -- T016560: pgvector lebt nur noch in Dev; Prod-Ensure/Init ohne Extension.
+      CREATE SCHEMA IF NOT EXISTS knowledge AUTHORIZATION website;
+      -- Switch to the application role so all objects are owned by website.
+      SET ROLE website;
+
+      CREATE TABLE IF NOT EXISTS knowledge.collections (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name            TEXT NOT NULL UNIQUE,
+        description     TEXT,
+        source          TEXT NOT NULL CHECK (source IN
+                          ('pr_history','specs_plans','claude_md','bug_tickets','custom','web_crawl')),
+        crawl_config    JSONB,
+        brand           TEXT REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+        chunk_count     INT NOT NULL DEFAULT 0,
+        last_indexed_at TIMESTAMPTZ,
+        embedding_model TEXT NOT NULL DEFAULT 'bge-m3',
+        created_by      UUID,
+        created_at      TIMESTAMPTZ DEFAULT now()
+      );
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'collections_brand_fkey') THEN
+          ALTER TABLE knowledge.collections ADD CONSTRAINT collections_brand_fkey FOREIGN KEY (brand) REFERENCES public.brands(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+        END IF;
+      END $$;
+
+      CREATE TABLE IF NOT EXISTS knowledge.documents (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        collection_id UUID NOT NULL REFERENCES knowledge.collections(id) ON DELETE CASCADE,
+        title         TEXT NOT NULL,
+        source_uri    TEXT,
+        raw_text      TEXT NOT NULL,
+        sha256        TEXT,
+        metadata      JSONB DEFAULT '{}',
+        created_at    TIMESTAMPTZ DEFAULT now(),
+        UNIQUE (collection_id, source_uri)
+      );
+
+      CREATE TABLE IF NOT EXISTS knowledge.chunks (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        document_id   UUID NOT NULL REFERENCES knowledge.documents(id) ON DELETE CASCADE,
+        collection_id UUID NOT NULL REFERENCES knowledge.collections(id) ON DELETE CASCADE,
+        position      INT  NOT NULL,
+        text          TEXT NOT NULL,
+        metadata      JSONB DEFAULT '{}',
+        UNIQUE (document_id, position)
+      );
+
+      CREATE INDEX IF NOT EXISTS chunks_collection ON knowledge.chunks (collection_id);
+
+      -- Revert to superuser to run GRANTs (website role cannot GRANT to itself).
+      RESET ROLE;
+      GRANT USAGE ON SCHEMA knowledge TO website;
+      GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA knowledge TO website;
+      GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA knowledge TO website;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA knowledge GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO website;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA knowledge GRANT USAGE, SELECT ON SEQUENCES TO website;
+    EOSQL
+    echo "Knowledge schema ensure complete."

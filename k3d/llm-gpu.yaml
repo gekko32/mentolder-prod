@@ -1,0 +1,454 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# llm-gpu: bge-Embedding/Reranking als Kubernetes-Deployments (CPU-only)
+#
+# T002551: Die vier llama.cpp-Server wandern vom Windows/WSL-GPU-Host
+# (Endpoints auf ${LLM_HOST_IP}) in zwei CPU-only-Deployments im Cluster:
+#   - bge-embed   (bge-m3,          --embeddings): Port 8080
+#   - bge-rerank  (bge-reranker-v2-m3, --reranking): Port 8080
+#
+# Damit entfällt der Host-SPOF und das Batch-Paar (8085/8086). Die Gateway-
+# Services heißen unverändert llm-gateway-embed/-rerank, exponiert auf Port
+# 8081 (bestehender Vertrag), targetPort ist der Container-Port 8080.
+#
+# Modell-Population: pro Deployment ein eigener PVC (RWO) — ein geteilter
+# ReadOnlyMany-PVC würde auf dem Multi-Node-fleet zwischen zwei Deployments
+# brechen und bräuchte NFS/Longhorn mit ReadOnlyMany, das k3d-dev nicht hat.
+# Die Basis lässt storageClassName frei → k3d-dev nutzt die Default-SC
+# (local-path). Der Fleet-Cluster pinnt die Modell-PVCs im Prod-Overlay auf
+# longhorn (prod-fleet/components/llm-models-longhorn) — repliziert statt
+# node-lokal, kein erneuter HF-Download nach Node-Ausfall. Der InitContainer
+# lädt das Modell idempotent nach (skip wenn vorhanden); der App-Container
+# mountet read-only.
+#
+# Image: ghcr.io/ggml-org/llama.cpp:server-b10223 — CPU-fähiger Build-Pin
+# (kein server-cpu-Tag; der Rolling-Tag `server` bewegt sich unter dem
+# Deployment weg, und Issue ggml-org/llama.cpp#19397 dokumentiert einen
+# CPU-only-Crash in älteren Builds). CUDA wird via CUDA_VISIBLE_DEVICES=""
+# deaktiviert.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── bge-embed: bge-m3 Embedding (llama.cpp, CPU-only) ────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bge-embed-models
+  labels:
+    app: bge-embed
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bge-embed
+  labels:
+    app: bge-embed
+spec:
+  replicas: 1
+  # Recreate, nicht RollingUpdate: die models-PVC ist ReadWriteOnce (Longhorn).
+  # Mit maxSurge startet der neue Pod, bevor der alte das Volume freigibt — und
+  # wartet dann auf ein Attach, das erst kommt, wenn er selbst weicht. Am
+  # 2026-08-03 stand bge-embed-7cf55557c9-fhvzl deshalb 155min in Init:0/1
+  # (PodInitializing, der initContainer startete nicht einmal), waehrend das
+  # VolumeAttachment noch an pk-hetzner-8 hing und der neue Pod auf
+  # pk-hetzner-6 geschedult war. Ein kurzer Ausfall beim Rollout ist der Preis;
+  # ein Deployment, das seinen eigenen Rollout nicht abschliessen kann, ist die
+  # Alternative (T002604).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: bge-embed
+  template:
+    metadata:
+      labels:
+        app: bge-embed
+    spec:
+      # fsGroup 101: curlimages/curl laeuft als uid=100/gid=101 (curl_user),
+      # nicht root. Ohne fsGroup ist die Longhorn-PVC root-owned und der
+      # InitContainer scheitert mit "Permission denied" beim Schreiben nach
+      # /models - 2026-08-02 als Ursache eines 4h40min-CrashLoopBackOff
+      # gefunden (live per kubectl patch behoben, hier fuer GitOps persistiert).
+      # SA-GR-06: runAsNonRoot auf Pod-Ebene ist nur die Pruefung; die
+      # expliziten UIDs liegen auf Container-Ebene, damit der Pod-Level-Wert
+      # die Init-Container nicht ueberschreibt.
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 101
+      initContainers:
+        - name: model-download
+          image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            allowPrivilegeEscalation: false
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              if [ ! -s /models/bge-m3-Q8_0.gguf ]; then
+                echo "Downloading bge-m3-Q8_0.gguf ..."
+                curl -fL --retry 3 --connect-timeout 10 \
+                  -o /models/bge-m3-Q8_0.gguf \
+                  https://huggingface.co/gpustack/bge-m3-GGUF/resolve/main/bge-m3-Q8_0.gguf
+              fi
+          volumeMounts:
+            - name: models
+              mountPath: /models
+          resources:
+            requests:
+              # [T003903] Kein BestEffort-QoS mehr: Model-Download darf unter
+              # Node-Druck nicht als erster evictet werden.
+              cpu: 100m
+              memory: 256Mi
+      containers:
+        - name: llama-cpp
+          image: ghcr.io/ggml-org/llama.cpp:server-b11561@sha256:052888c603894ecfa08deb6714fdc2d7084e491e174d5ab41bfb36b49ee7151c
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+          args:
+            - "-m"
+            - "/models/bge-m3-Q8_0.gguf"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8080"
+            - "-ngl"
+            - "0"
+            - "-b"
+            - "8192"
+            - "-ub"
+            - "8192"
+            # T002835: -np 4 -> 2. Der Speicherbedarf skaliert mit -np x -ub;
+            # vier Slots erzeugten die Peaks, die T002580 durch ein hoeheres
+            # Limit aufzufangen versuchte. Durchsatz kosten sie nichts: bei
+            # limits.cpu 2000m / -t 2 stehen hinter vier Slots nur zwei
+            # Threads. Gemessen am 2026-08-09: CPU 1977m von 2000m (99 %) —
+            # die Parallelitaet wartet auf Kerne, die es nicht gibt.
+            #
+            # -ub bleibt bei 8192 und ist KEIN Stellhebel: bge-m3 ist
+            # nicht-kausal (XLM-RoBERTa), llama.cpp kann eine solche Sequenz
+            # nicht ueber mehrere physische Batches aufteilen. Jeder Input
+            # laenger als -ub scheitert mit "input is too large to process"
+            # (T002260) — eine Senkung braeche lange Texte still, waehrend
+            # Kurztext-Smoke-Tests gruen blieben.
+            - "-np"
+            - "2"
+            # T002661: -t MUSS zur CPU-Quota passen. Ohne das Flag waehlt
+            # llama.cpp nproc — im Container 8 (der Node hat 8 Kerne, cgroup
+            # maskiert nproc nicht), waehrend limits.cpu 2000m nur 2 Kerne
+            # erlaubt. Gemessen am 2026-08-04: 5003/9172 Perioden gedrosselt
+            # (54,5 %), throttled_usec 2028s gegen usage_usec 1181s — laenger
+            # gedrosselt als gerechnet. Alle Threads synchronisieren an jeder
+            # Layer-Barriere, ein gedrosselter haelt also den ganzen Batch bis
+            # zum Periodenende an: 10,7s fuer 13 Tokens.
+            # Wird limits.cpu geaendert, muss -t mitgezogen werden.
+            # Guard: tests/py/spec/native_ported/spec/llm-pipeline/test_bge_thread_quota.py
+            - "-t"
+            - "2"
+            - "--embeddings"
+          env:
+            - name: CUDA_VISIBLE_DEVICES
+              value: ""
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "1000m"
+            limits:
+              # T002835: limits.memory 3Gi -> 4Gi. T002580 hob 2Gi -> 3Gi auf
+              # Basis eines Peak-RSS von ~1.94Gi (2026-08-03) und liess -np 4
+              # -ub 8192 stehen. Das reichte nicht: gemessen am 2026-08-09
+              # 2647Mi von 3072Mi (86 %) und 6 OOMKills in 11h, letzter
+              # exitCode 137 am 2026-08-08 18:22. Der Fix hat zwei Haelften —
+              # das Limit gibt Kopfraum ueber dem realen Peak, die gesenkte
+              # Parallelitaet (-np 2, oben) nimmt den Peaks die Ursache.
+              # Ohne die zweite Haelfte verschoebe sich die Grenze nur.
+              # Guard: llm-pipeline.bats.
+              memory: "4Gi"
+              cpu: "2000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: bge-embed-models
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-gateway-embed
+  labels:
+    app: llm-gateway
+spec:
+  selector:
+    app: bge-embed
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8080
+
+# ── bge-rerank: bge-reranker-v2-m3 Rerank (llama.cpp, CPU-only) ──────────
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bge-rerank-models
+  labels:
+    app: bge-rerank
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bge-rerank
+  labels:
+    app: bge-rerank
+spec:
+  replicas: 1
+  # Wie bei bge-embed: ReadWriteOnce-PVC vertraegt kein maxSurge. Dieses
+  # Deployment trug denselben Defekt und war nur zufaellig noch nicht
+  # haengengeblieben — sein Rollout traf bisher immer denselben Node (T002604).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: bge-rerank
+  template:
+    metadata:
+      labels:
+        app: bge-rerank
+    spec:
+      # fsGroup 101: siehe bge-embed weiter oben - gleiche Ursache, gleicher Fix.
+      # SA-GR-06: runAsNonRoot auf Pod-Ebene, UIDs auf Container-Ebene.
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 101
+      initContainers:
+        - name: model-download
+          image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            allowPrivilegeEscalation: false
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              if [ ! -s /models/bge-reranker-v2-m3-Q8_0.gguf ]; then
+                echo "Downloading bge-reranker-v2-m3-Q8_0.gguf ..."
+                curl -fL --retry 3 --connect-timeout 10 \
+                  -o /models/bge-reranker-v2-m3-Q8_0.gguf \
+                  https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF/resolve/main/bge-reranker-v2-m3-Q8_0.gguf
+              fi
+          volumeMounts:
+            - name: models
+              mountPath: /models
+          resources:
+            requests:
+              # [T003903] Kein BestEffort-QoS mehr: Model-Download darf unter
+              # Node-Druck nicht als erster evictet werden.
+              cpu: 100m
+              memory: 256Mi
+      containers:
+        - name: llama-cpp
+          image: ghcr.io/ggml-org/llama.cpp:server-b11561@sha256:052888c603894ecfa08deb6714fdc2d7084e491e174d5ab41bfb36b49ee7151c
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+          args:
+            - "-m"
+            - "/models/bge-reranker-v2-m3-Q8_0.gguf"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8080"
+            - "-ngl"
+            - "0"
+            - "-b"
+            - "8192"
+            - "-ub"
+            - "8192"
+            - "-np"
+            - "4"
+            # T002661: analog zu bge-embed — -t an limits.cpu (2000m = 2 Kerne)
+            # gebunden. Hier war die Drosselung bisher nur latent (145/12354
+            # Perioden, 1,2 %), weil das Deployment kaum Last sieht; unter
+            # Rerank-Batches traefe es dasselbe Muster.
+            # Guard: tests/py/spec/native_ported/spec/llm-pipeline/test_bge_thread_quota.py
+            - "-t"
+            - "2"
+            - "--reranking"
+          env:
+            - name: CUDA_VISIBLE_DEVICES
+              value: ""
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "1000m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: bge-rerank-models
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-gateway-rerank
+  labels:
+    app: llm-gateway
+spec:
+  selector:
+    app: bge-rerank
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8080
+---
+# ── bge-embed-bulk: elastischer Embedding-Pool fuer Bulk-Lasten (T900993) ──
+# replicas: 0 im Ruhezustand (keine idle-Kosten). Vor einem Bulk-Sync:
+#   kubectl -n workspace scale deploy/bge-embed-bulk --replicas=3
+# danach zurueck auf 0. Jede Replika laedt das Modell (605 MiB) per
+# InitContainer in ein leeres emptyDir — kein shared RWO-PVC, deshalb kein
+# Recreate/Attach-Deadlock wie bei bge-embed (T002604) und HPA-fest:
+# ein HPA auf bge-embed wuerde per Recreate den laufenden Pod killen.
+# Labels app: bge-embed:Bulk-Pods joinen automatisch den Service
+# llm-gateway-embed (Round-Robin) — kein Client-Umbau noetig; heterogene
+# Helper (lokale GPU-Box mit llama-server --embeddings) kommen zusaetzlich
+# ueber cbm-embed-sync.py --embed-urls dazu (Round-Robin-Fan-out).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bge-embed-bulk
+  labels:
+    app: bge-embed
+    pool: bulk
+spec:
+  replicas: 0
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: bge-embed
+      pool: bulk
+  template:
+    metadata:
+      labels:
+        app: bge-embed
+        pool: bulk
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 101
+      initContainers:
+        - name: model-download
+          image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            allowPrivilegeEscalation: false
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              if [ ! -s /models/bge-m3-Q8_0.gguf ]; then
+                echo "Downloading bge-m3-Q8_0.gguf ..."
+                curl -fL --retry 3 --connect-timeout 10 \
+                  -o /models/bge-m3-Q8_0.gguf \
+                  https://huggingface.co/gpustack/bge-m3-GGUF/resolve/main/bge-m3-Q8_0.gguf
+              fi
+          volumeMounts:
+            - name: models
+              mountPath: /models
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+      containers:
+        - name: llama-cpp
+          image: ghcr.io/ggml-org/llama.cpp:server-b11561@sha256:052888c603894ecfa08deb6714fdc2d7084e491e174d5ab41bfb36b49ee7151c
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+          args:
+            - "-m"
+            - "/models/bge-m3-Q8_0.gguf"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8080"
+            - "-ngl"
+            - "0"
+            - "-b"
+            - "8192"
+            - "-ub"
+            - "8192"
+            # Gleiche Paarung wie bge-embed: -np 2 Slots, -t 2 Threads gegen
+            # limits.cpu 2000m (T002661/T002835 — Oversubscription friert an
+            # der Layer-Barriere). Guard: bge-thread-quota.bats.
+            - "-np"
+            - "2"
+            - "-t"
+            - "2"
+            - "--embeddings"
+          env:
+            - name: CUDA_VISIBLE_DEVICES
+              value: ""
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 30
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+      volumes:
+        - name: models
+          emptyDir: {}

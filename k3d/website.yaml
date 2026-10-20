@@ -1,0 +1,862 @@
+# NUR VIA TASK DEPLOYEN [T901777]: VAR-Platzhalter brauchen den
+# Task/Flux-Render-Pfad (envsubst). Direktes 'kubectl apply -f' hinterlaesst
+# Literale. Cluster-CIDRs POD_CIDR/SERVICE_CIDR aus environments/schema.yaml
+# (k3s-Defaults 10.42/10.43, devmesh 10.52/10.53).
+# ── Namespace ─────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+---
+
+# ── Website ConfigMap ─────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: website-config
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+data:
+  # Brand
+  BRAND: "${BRAND_ID}"
+  PROD_DOMAIN: "${PROD_DOMAIN}"
+  CLUSTER_ENV: "${CLUSTER_ENV}"
+  AUTH_EXTERNAL_URL: "${AUTH_EXTERNAL_URL}"
+  VAULT_EXTERNAL_URL: "${VAULT_EXTERNAL_URL}"
+  BRAIN_EXTERNAL_URL: "${BRAIN_EXTERNAL_URL}"
+  WHITEBOARD_EXTERNAL_URL: "${WHITEBOARD_EXTERNAL_URL}"
+  BUG_REPORT_CHANNEL: "bugs"
+  # Logging
+  PINO_LOG_LEVEL: "info"
+  # Pocket ID OIDC provider (replaced Keycloak)
+  POCKET_ID_INTERNAL_URL: "http://pocket-id.${WORKSPACE_NAMESPACE}.svc.cluster.local:1411"
+  # SMTP (dev: Mailpit; prod: smtp.mailbox.org via env registry)
+  SMTP_HOST: "${SMTP_HOST}"
+  SMTP_PORT: "${SMTP_PORT}"
+  SMTP_SECURE: "${SMTP_SECURE}"
+  SMTP_USER: "${SMTP_USER}"
+  FROM_EMAIL: "${CONTACT_EMAIL}"
+  FROM_NAME: "${BRAND_NAME}"
+  # Legal / Impressum
+  BRAND_NAME: "${BRAND_NAME}"
+  CONTACT_NAME: "${CONTACT_NAME}"
+  CONTACT_EMAIL: "${CONTACT_EMAIL}"
+  CONTACT_PHONE: "${CONTACT_PHONE}"
+  CONTACT_CITY: "${CONTACT_CITY}"
+  LEGAL_STREET: "${LEGAL_STREET}"
+  LEGAL_ZIP: "${LEGAL_ZIP}"
+  LEGAL_JOBTITLE: "${LEGAL_JOBTITLE}"
+  LEGAL_UST_ID: "${LEGAL_UST_ID}"
+  LEGAL_WEBSITE: "${LEGAL_WEBSITE}"
+  # Nextcloud
+  NEXTCLOUD_URL: "http://nextcloud.${WORKSPACE_NAMESPACE}.svc.cluster.local"
+  NEXTCLOUD_EXTERNAL_URL: "${NEXTCLOUD_EXTERNAL_URL}"
+  NEXTCLOUD_ADMIN_USER: "admin"
+  NEXTCLOUD_CALDAV_USER: "admin"
+  # Pocket ID is the auth provider — APP_URL is auth.${PROD_DOMAIN}
+  POCKET_ID_FRONTEND_URL: "${POCKET_ID_FRONTEND_URL}"
+  POCKET_ID_URL: "${POCKET_ID_URL}"
+  TRAEFIK_EXTERNAL_URL: "${TRAEFIK_EXTERNAL_URL}"
+  MAIL_EXTERNAL_URL: "${MAIL_EXTERNAL_URL}"
+  # Portal admin
+  PORTAL_ADMIN_USERNAME: "gekko,paddione,quamain,test-admin,tina-merlin@web.de"
+  CALENDAR_NAME: "personal"
+  WORK_START_HOUR: "9"
+  WORK_END_HOUR: "17"
+  SLOT_DURATION_MIN: "60"
+  WORK_DAYS: "1,2,3,4,5"
+  BOOKING_HORIZON_DAYS: "21"
+  MIN_ADVANCE_HOURS: "24"
+  # Whisper
+  WHISPER_URL: "http://whisper.${WORKSPACE_NAMESPACE}.svc.cluster.local:8000"
+  # LLM (local-first pipeline — bge-embed/rerank in-cluster via llm-gateway Services)
+  LLM_EMBED_URL: "${LLM_EMBED_URL}"
+  LLM_RERANKER_URL: "${LLM_RERANKER_URL}"
+  LLM_ENABLED: "${LLM_ENABLED}"
+  LLM_RERANK_ENABLED: "${LLM_RERANK_ENABLED}"
+  # KORE-Assistent (no-LLM keyword-search mode for now)
+  ENABLE_ASSISTANT_ADMIN: "true"
+  ENABLE_ASSISTANT_PORTAL: "true"
+  # Brett
+  BRETT_DOMAIN: "${BRETT_DOMAIN}"
+  BRETT_INTERNAL_URL: "http://brett.${WORKSPACE_NAMESPACE}.svc.cluster.local:3000"
+  # Arena (last-man-standing game server; same host on both brands — mentolder only)
+  ARENA_WS_URL: "${ARENA_WS_URL}"
+  # Site
+  # T002139: no-op touch to retrigger render-fleet-artifact.yml after FLUX_ENABLED cutover
+  # (retrigger attempt 2 — attempt 1 in #3171 failed because render-fleet-artifact.yml
+  # itself was broken; that's fixed now in T002146/#3172)
+  SITE_URL: "${WEBSITE_SITE_URL}"
+  # CORS allowlist for the React SPA (react.<brand>); empty → fail-closed (no React app)
+  REACT_APP_ORIGIN: "${REACT_APP_ORIGIN}"
+  # System-test failure loop (Task 10): off by default. Flip to "true" only
+  # after the rollout checklist in feat/systemtest-failure-loop has been run.
+  SYSTEMTEST_LOOP_ENABLED: "${SYSTEMTEST_LOOP_ENABLED}"
+---
+
+# ── Monitoring RBAC ──────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: website
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ${WEBSITE_NAMESPACE}-monitoring-reader
+  labels:
+    app: website
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "events", "nodes", "namespaces", "configmaps", "persistentvolumeclaims", "services"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["get", "list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list"]
+  - apiGroups: ["traefik.io", "traefik.containo.us"]
+    resources: ["ingressroutes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["korczewski-tls", "workspace-wildcard-tls"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ${WEBSITE_NAMESPACE}-monitoring-reader
+  labels:
+    app: website
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ${WEBSITE_NAMESPACE}-monitoring-reader
+subjects:
+  - kind: ServiceAccount
+    name: website
+    namespace: ${WEBSITE_NAMESPACE}
+---
+
+# ── Website self-exec & ops: namespaced pods/exec and patch for website SA ───
+# T900110: exec is no longer cluster-wide (removed from ClusterRole above).
+# T900114: deployments/patch scoped to website namespace (ClusterRole is read-only).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: website-self-exec
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+rules:
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["patch"]
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: website-self-exec
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: website-self-exec
+subjects:
+  - kind: ServiceAccount
+    name: website
+    namespace: ${WEBSITE_NAMESPACE}
+---
+
+# ── Website Deployment ────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: website
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  replicas: 1
+  # /var/evidence is an emptyDir — rrweb test artifacts are ephemeral and the
+  # systemtest-cleanup CronJob GC's them. Without a RWO PVC blocking it, we
+  # can use RollingUpdate maxSurge:1 maxUnavailable:0 to keep one ready pod
+  # live during deploys, eliminating the ~60s 503 window from Recreate +
+  # `:latest` image pulls.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: website
+  template:
+    metadata:
+      labels:
+        app: website
+      annotations:
+        # T002154: website-config haengt per envFrom am Container — envFrom-Werte
+        # werden nur beim Containerstart kopiert und propagieren NICHT bei einem
+        # ConfigMap-Update (anders als gemountete ConfigMap-Volumes). Ohne diese
+        # Annotation loest eine Config-Korrektur keinen Rollout aus: der Pod
+        # behaelt den alten Wert, bis ihn zufaellig etwas anderes neu startet.
+        # Der Hash wird NACH envsubst ueber das gerenderte Manifest gebildet —
+        # ein Kustomize-Hash-Suffix waere hier wirkungslos, weil Kustomize nur
+        # den unsubstituierten Platzhalter sieht (siehe design.md D2).
+        checksum/config: "${WEBSITE_CONFIG_SHA}"
+    spec:
+      serviceAccountName: website
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      # Lower ndots so FQDNs like shared-db.${WORKSPACE_NAMESPACE}.svc.cluster.local (4 dots)
+      # are resolved as absolute names without iterating through search-path suffixes.
+      # On clusters where the node inherits a home-router search domain (e.g. fritz.box),
+      # the default ndots:5 causes those lookups to time out and Node.js (musl libc)
+      # returns EAI_AGAIN — breaking the pg-pool connection on first use.
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "3"
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      containers:
+        - name: website
+          image: ghcr.io/paddione/${WEBSITE_IMAGE}:${WEBSITE_IMAGE_TAG}
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          envFrom:
+            - configMapRef:
+                name: website-config
+          env:
+            - name: WEBSITE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: WEBSITE_DB_PASSWORD
+            - name: SESSIONS_DATABASE_URL
+              value: "postgresql://${WEBSITE_DB_USER}:$(WEBSITE_DB_PASSWORD)@shared-db.${WEBSITE_DB_NAMESPACE}.svc.cluster.local:5432/${WEBSITE_DB_NAME}"
+            - name: REPO_ROOT
+              value: /app
+            - name: CRON_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: CRON_SECRET
+            - name: SESSIONS_CRON_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: SESSIONS_CRON_TOKEN
+            # WEBSITE_OIDC_SECRET (Keycloak) removed — Pocket ID is now the auth provider
+            - name: POCKET_ID_WEBSITE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: POCKET_ID_WEBSITE_SECRET
+            - name: POCKET_ID_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: POCKET_ID_API_KEY
+            - name: SMTP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: SMTP_PASSWORD
+            - name: SEPA_CREDITOR_IBAN
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: SEPA_CREDITOR_IBAN
+                  optional: true
+            - name: SEPA_CREDITOR_BIC
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: SEPA_CREDITOR_BIC
+                  optional: true
+            - name: SEPA_CREDITOR_ID
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: SEPA_CREDITOR_ID
+                  optional: true
+            # KEYCLOAK_ADMIN_PASSWORD removed — keycloak.ts replaced by identity.ts (Pocket ID API)
+            - name: NEXTCLOUD_ADMIN_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: NEXTCLOUD_ADMIN_PASS
+            - name: NEXTCLOUD_CALDAV_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: NEXTCLOUD_CALDAV_PASSWORD
+            - name: SELLER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: website-seller-config
+                  key: SELLER_NAME
+            - name: SELLER_ADDRESS
+              valueFrom:
+                configMapKeyRef:
+                  name: website-seller-config
+                  key: SELLER_ADDRESS
+            - name: SELLER_POSTAL_CODE
+              valueFrom:
+                configMapKeyRef:
+                  name: website-seller-config
+                  key: SELLER_POSTAL_CODE
+            - name: SELLER_CITY
+              valueFrom:
+                configMapKeyRef:
+                  name: website-seller-config
+                  key: SELLER_CITY
+            - name: SELLER_COUNTRY
+              valueFrom:
+                configMapKeyRef:
+                  name: website-seller-config
+                  key: SELLER_COUNTRY
+            - name: SELLER_VAT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: website-seller-config
+                  key: SELLER_VAT_ID
+            - name: SELLER_TAX_NUMBER
+              valueFrom:
+                configMapKeyRef:
+                  name: website-seller-config
+                  key: SELLER_TAX_NUMBER
+            - name: BRETT_BOT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: BRETT_BOT_SECRET
+            - name: MONITORING_WEBHOOK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: MONITORING_WEBHOOK_TOKEN
+            # Nextcloud Talk DB connection — used by /api/admin/brett/broadcast
+            # to find rooms with active calls (OCS API is user-scoped and only
+            # lists rooms the configured admin is a participant of, which misses
+            # most ongoing calls). Read-only query against oc_talk_rooms.
+            - name: NEXTCLOUD_DB_HOST
+              value: "${NEXTCLOUD_DB_HOST}"
+            - name: NEXTCLOUD_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: NEXTCLOUD_DB_PASSWORD
+            - name: INTERNAL_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: INTERNAL_API_TOKEN
+            - name: ARENA_WS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: website-config
+                  key: ARENA_WS_URL
+            - name: IPV64_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: IPV64_API_KEY
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: OPENROUTER_API_KEY
+                  optional: true
+            - name: OPENCODE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: OPENCODE_API_KEY
+                  optional: true
+            - name: LLM_ROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: LLM_ROUTER_API_KEY
+                  optional: true
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: DEEPSEEK_API_KEY
+                  optional: true
+            - name: DEEPSEEK_API_KEY_PK
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: DEEPSEEK_API_KEY_PK
+                  optional: true
+            - name: EVIDENCE_ROOT
+              value: "/var/evidence"
+            - name: COMFY_HOST_IP
+              value: "${COMFY_HOST_IP}"
+            - name: COMFY_PORT
+              value: "${COMFY_PORT}"
+            - name: RIGGER_HOST_IP
+              value: "${RIGGER_HOST_IP}"
+            - name: RIGGER_PORT
+              value: "${RIGGER_PORT}"
+            - name: BRETT_OIDC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: BRETT_OIDC_SECRET
+            - name: MEDIAVIEWER_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: domain-config
+                  key: MEDIAVIEWER_HOST
+            - name: TERMINAL_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: domain-config
+                  key: TERMINAL_HOST
+            - name: VIDEOVAULT_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: domain-config
+                  key: VIDEOVAULT_DOMAIN
+            # T001490 Task 9 — content-publish bot token (fine-grained
+            # `contents:write` + `pull-requests:write` on website/content/**).
+            # Sourced from k3d/website-content-token-secret.yaml in dev and
+            # from a per-env SealedSecret in prod.
+            - name: GITHUB_CONTENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: website-content-token
+                  key: GITHUB_CONTENT_TOKEN
+          volumeMounts:
+            - name: evidence
+              mountPath: /var/evidence
+          ports:
+            - containerPort: 4321
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 4321
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 4321
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+      volumes:
+        - name: evidence
+          emptyDir: {}
+---
+
+# ── Website Service ───────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: website
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  selector:
+    app: website
+  ports:
+    - port: 80
+      targetPort: 4321
+---
+
+# ── Middlewares: edge compression + immutable static-asset caching (T001922) ──
+# E1: Traefik's default compress excludedContentTypes excludes text/event-stream,
+# so the admin SSE endpoints stay unbuffered.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: website-compress
+  namespace: ${WEBSITE_NAMESPACE}
+spec:
+  compress: {}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: website-static-cache
+  namespace: ${WEBSITE_NAMESPACE}
+spec:
+  headers:
+    customResponseHeaders:
+      Cache-Control: "public, max-age=31536000, immutable"
+---
+
+# ── IngressRoute ─────────────────────────────────────────────────────────────
+# T001490 Task 9: apex Host(`${WEBSITE_HOST}`) backend is selected by
+# `WEBSITE_PRIMARY_SERVICE`, derived from `PRIMARY_FRONTEND` (astro|react) in
+# the deploy task. The Astro SSR is the default; React (mentolder-web) is
+# always deployed too, so the switch is one line + deploy. Per-service hosts
+# (react.<brand>, admin.<brand>, …) are unaffected.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: website
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  entryPoints:
+    - web
+  routes:
+    # Content-hashed assets: compress + one-year immutable cache (T001922 E1)
+    - kind: Rule
+      match: Host(`${WEBSITE_HOST}`) && PathPrefix(`/_astro/`)
+      middlewares:
+        - name: website-compress
+        - name: website-static-cache
+      services:
+        - name: ${WEBSITE_PRIMARY_SERVICE}
+          port: 80
+    # Everything else: compress only
+    - kind: Rule
+      match: Host(`${WEBSITE_HOST}`)
+      middlewares:
+        - name: website-compress
+      services:
+        - name: ${WEBSITE_PRIMARY_SERVICE}
+          port: 80
+---
+
+# ── NetworkPolicies: website-Namespace ───────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+---
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    # kube-router netpol enforcement on cross-node CoreDNS occasionally REJECTs
+    # because the flannel.1 tunnel source IP doesn't match the namespaceSelector
+    # IPSet for short-lived Job pods (see reference_kube_router_hostnet_gotcha).
+    # Adding the pod-CIDR ipBlock makes :53 reachable regardless of selector race.
+    - ipBlock:
+        cidr: ${POD_CIDR}
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+---
+
+# Website-Pod darf workspace-Services erreichen
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-workspace
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ${WORKSPACE_NAMESPACE}
+---
+
+# Website-Pod darf Collabora im workspace-office-Namespace erreichen
+# (Platform Hub System-Integrität Health-Probe → collabora:9980, T000287).
+# workspace-office trägt denselben Namespace-Namen auf beiden Clustern → literal, keine Variable.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-workspace-office
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: workspace-office
+    ports:
+    - port: 9980
+      protocol: TCP
+---
+
+# Traefik-Ingress aus kube-system erlauben
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-traefik-ingress
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: traefik
+---
+
+# Intra-namespace communication for website pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace-egress
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector: {}
+---
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace-ingress
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector: {}
+---
+
+# kube-router IPSet race fix: short-lived Job pods may not be added to the podSelector
+# IPSet fast enough. ipBlock predicate is evaluated immediately — no lookup needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-pod-cidr-ingress
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - ipBlock:
+        cidr: ${POD_CIDR}
+---
+
+# Service-CIDR Egress: pods must reach ClusterIP services.
+# podSelector: {} only covers pod IPs, not ${SERVICE_CIDR} ClusterIPs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-service-cidr-egress
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - ipBlock:
+        cidr: ${SERVICE_CIDR}
+---
+
+
+# SMTP Egress: Website-Pod darf externen SMTP-Server erreichen (Mailpit dev / mailbox.org prod)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-smtp-egress
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - ports:
+    - port: 587
+      protocol: TCP
+    - port: 1025
+      protocol: TCP
+---
+
+# HTTPS Egress: Website-Pod darf externe HTTPS-Dienste erreichen (Anthropic API, GitHub webhooks, etc.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-https-egress
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - ports:
+    - port: 443
+      protocol: TCP
+    - port: 6443
+      protocol: TCP
+---
+
+# LLM-Gateway Egress: Website-Pod darf wg-mesh LLM-Endpunkt (TEI port 8081, LM Studio port 1234) erreichen
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-llm-egress
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - ports:
+    - port: 1234
+      protocol: TCP
+    - port: 8081
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: 192.168.100.0/24
+---
+
+# Ingress von Workspace-Namespace erlauben (für CronJobs)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-workspace-ingress
+  namespace: ${WEBSITE_NAMESPACE}
+  labels:
+    app: website
+spec:
+  podSelector:
+    matchLabels:
+      app: website
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ${WORKSPACE_NAMESPACE}
+    ports:
+    - port: 80
+      protocol: TCP
+    - port: 4321
+      protocol: TCP

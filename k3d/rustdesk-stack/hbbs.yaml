@@ -1,0 +1,87 @@
+# ═══════════════════════════════════════════════════════════════════
+# hbbs — RustDesk ID / rendezvous server
+# ═══════════════════════════════════════════════════════════════════
+# hostNetwork on a single public node so native clients reach it
+# directly. ${TURN_NODE} == the coturn/Janus node (no port collision
+# with 3478/5349/49152-49252/20000-20200). Signing keypair mounted
+# from rustdesk-secrets so client IDs survive restarts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hbbs
+  namespace: rustdesk
+  labels:
+    app: hbbs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hbbs
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: hbbs
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/hostname: ${TURN_NODE}
+      # Non-Root (SA-GR-06): Ports 21115-21118 liegen oberhalb des
+      # privilegierten Bereichs, kein CAP_NET_BIND_SERVICE noetig. Die
+      # .db-Dateien legt hbbs im workingDir an — emptyDir "workdir", da
+      # /root (Mode 700) fuer uid 65534 unlesbar ist.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: hbbs
+          image: rustdesk/rustdesk-server:1.1.16@sha256:8ecdab65deb7c84652a626380e31d11a8f1fbafd97916d57f95c20628f943c00
+          imagePullPolicy: IfNotPresent
+          command: ["hbbs"]
+          workingDir: /var/lib/rustdesk
+          ports:
+            - containerPort: 21115
+              hostPort: 21115
+              protocol: TCP
+            - containerPort: 21116
+              hostPort: 21116
+              protocol: TCP
+            - containerPort: 21116
+              hostPort: 21116
+              protocol: UDP
+            - containerPort: 21118
+              hostPort: 21118
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: keys
+              mountPath: /var/lib/rustdesk/id_ed25519
+              subPath: id_ed25519
+              readOnly: true
+            - name: keys
+              mountPath: /var/lib/rustdesk/id_ed25519.pub
+              subPath: id_ed25519.pub
+              readOnly: true
+            - name: workdir
+              mountPath: /var/lib/rustdesk
+          resources:
+            requests:
+              memory: 32Mi
+              cpu: "50m"
+            limits:
+              memory: 128Mi
+              cpu: "200m"
+      volumes:
+        - name: keys
+          secret:
+            secretName: rustdesk-secrets
+        - name: workdir
+          emptyDir: {}

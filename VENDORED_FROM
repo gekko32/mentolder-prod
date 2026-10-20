@@ -1,0 +1,4 @@
+# Nur zur Info: Stand, aus dem die Basen vendored wurden (Runbook Phase 3.1).
+Paddione/Bachelorprojekt f3ceec26ab1289061b83223ad76f31c37e66cb8b (2026-10-15)
++ prod-fleet/rustdesk und Render-Block 5f aus 01fb13bbe39830ffcd0d2a2fef27885ca3658ae3 (#6736)
++ k3d/pvc-backup-cronjob.yaml Fix aus 01fb13bbe (#6736)

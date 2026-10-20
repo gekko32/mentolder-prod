@@ -1,0 +1,488 @@
+# NUR VIA TASK DEPLOYEN [T901777]: Datei enthaelt Escapes/Platzhalter fuer den Task/Flux-Render-Pfad. Direktes 'kubectl apply -f' hinterlaesst Literale (siehe k3d/README.md).
+# ═══════════════════════════════════════════════════════════════════
+# PVC Data Backup — daily encrypted tar archives of file-backed PVCs
+# SA-07: Daily at 03:00 UTC (one hour after db-backup at 02:00)
+#
+# Design (T000317): the orchestrator pod clones the two Longhorn data
+# PVCs (vaultwarden) via CSI dataSource so the backup mounts
+# placement-independent copies — never the live RWO volumes, which
+# deadlock on Multi-Attach when the app pod runs on another node.
+# nextcloud-data stays on local-path (no clone support). local-path PVCs
+# are pinned to different nodes, so no single pod can mount them together
+# with backup-pvc. One reader Job per data volume lands on its PV's node;
+# the orchestrator streams its encrypted tar into the writer Job (which
+# owns backup-pvc) via kubectl exec. After the writer completes, the
+# orchestrator deletes the clones and readers. [T901105]
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pvc-backup
+  namespace: workspace
+  labels:
+    app: backup
+spec:
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app: pvc-backup
+        spec:
+          serviceAccountName: pvc-backup
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: orchestrator
+              image: alpine/k8s:1.37.1@sha256:712dc5385d1c1a3f83b747fa9e40f64d433a97f72ff42f9755ff7dd1f62846e4
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                runAsUser: 65534
+                capabilities:
+                  drop: ["ALL"]
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  # Derive the namespace at runtime from the pod's serviceaccount.
+                  # kustomize namespace-remapping does NOT rewrite string literals
+                  # in container args, so a hardcoded NS=workspace operated in the
+                  # wrong namespace on the korczewski brand (workspace-korczewski)
+                  # and hit RBAC Forbidden. [T000368]
+                  NS=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+                  STAMP=$(date +%Y%m%d-%H%M%S)
+                  MOUNTER="pvc-backup-mounter-$${STAMP}"
+
+                  # Longhorn supports CSI clone (placement-independent copy);
+                  # local-path does NOT. Detect each data PVC's storageclass so
+                  # we ONLY clone the longhorn-backed sources. local-path sources
+                  # are mounted LIVE (readOnly) by the mounter, which is then
+                  # co-located on the owning pod's node via podAffinity so the
+                  # RWO local-path volume is shareable — the same model already
+                  # used for nextcloud-data. mentolder keeps both data PVCs on
+                  # longhorn (cloned); korczewski has no Longhorn install, so its
+                   # vaultwarden PVC stays on local-path and is tarred
+                   # live. [T000403]
+                   # Vaultwarden ist auf mentolder/fleet abgebaut [T016559]: fehlt die PVC,
+                   # wird sie uebersprungen statt den ganzen Lauf (inkl. nextcloud-data)
+                   # unter `set -e` abzubrechen.
+                   VW_PRESENT=0
+                   if kubectl -n "$NS" get pvc vaultwarden-data-pvc >/dev/null 2>&1; then VW_PRESENT=1; fi
+                   VW_SC=""
+                   if [ "$VW_PRESENT" = "1" ]; then VW_SC=$(kubectl -n "$NS" get pvc vaultwarden-data-pvc -o jsonpath='{.spec.storageClassName}'); fi
+
+                   CLONES=""
+                   [ "$VW_SC" = "longhorn" ] && CLONES="$CLONES vaultwarden-data-backup-clone"
+
+                   # Each data volume points at its clone (longhorn) or its live
+                   # PVC (local-path). Mounter placement is enforced by the RWO
+                   # volumes' node affinity (PVs pinned to their nodes); the
+                   # former required podAffinity terms [nextcloud, vaultwarden]
+                   # were deterministically unschedulable on fleet (k3s 1.36.1)
+                   # and removed. [T900801]
+                   if [ "$VW_SC" = "longhorn" ]; then
+                     VW_CLAIM="vaultwarden-data-backup-clone"
+                   else
+                     VW_CLAIM="vaultwarden-data-pvc"
+                   fi
+
+
+                  cleanup() {
+                    echo "Cleanup: deleting mounter Job and clone PVCs..."
+                    kubectl -n "$NS" delete job "$MOUNTER" --ignore-not-found --wait=true || true
+                    kubectl -n "$NS" delete jobs -l app=pvc-backup,role=reader --ignore-not-found --wait=true || true
+                    for c in $CLONES; do
+                      kubectl -n "$NS" delete pvc "$c" --ignore-not-found || true
+                    done
+                  }
+                  trap cleanup EXIT
+
+                  # Stale clones from a crashed prior run would block creation.
+                  # Wait for them to vanish; a PVC stuck in Terminating means a
+                  # pod still references it — fail loudly with diagnostics so the
+                  # operator can clear the blocker instead of a silent timeout.
+                  for c in $CLONES; do
+                    if ! kubectl -n "$NS" delete pvc "$c" --ignore-not-found --wait=true --timeout=120s; then
+                      echo "ERROR: clone $c stuck in Terminating — pods still referencing it:"
+                      # jq is NOT in alpine/k8s:1.36.2 — use kubectl jsonpath.
+                      for p in $(kubectl -n "$NS" get pods -o name 2>/dev/null); do
+                        claims=$(kubectl -n "$NS" get "$p" -o jsonpath='{.spec.volumes[*].persistentVolumeClaim.claimName}' 2>/dev/null || true)
+                        for cl in $claims; do
+                          if [ "$cl" = "$c" ]; then
+                            phase=$(kubectl -n "$NS" get "$p" -o jsonpath='{.status.phase}' 2>/dev/null || echo "?")
+                            node=$(kubectl -n "$NS" get "$p" -o jsonpath='{.spec.nodeName}' 2>/dev/null || echo "?")
+                            echo "  $p phase=$phase node=$node"
+                            break
+                          fi
+                        done
+                      done
+                      exit 1
+                    fi
+                  done
+
+                  if [ -n "$CLONES" ]; then
+                    echo "Creating clone PVCs from live Longhorn volumes..."
+                     VW_SIZE=$(kubectl -n "$NS" get pvc vaultwarden-data-pvc -o jsonpath='{.spec.resources.requests.storage}')
+                    for c in $CLONES; do
+                      case "$c" in
+                       vaultwarden-data-backup-clone) SRC=vaultwarden-data-pvc; SIZE=$VW_SIZE ;;
+                      esac
+                      kubectl -n "$NS" apply -f - <<CLONE
+                  apiVersion: v1
+                  kind: PersistentVolumeClaim
+                  metadata:
+                    name: $${c}
+                    labels: { app: pvc-backup }
+                  spec:
+                    storageClassName: longhorn
+                    accessModes: ["ReadWriteOnce"]
+                    resources: { requests: { storage: $${SIZE} } }
+                    dataSource: { kind: PersistentVolumeClaim, name: $${SRC} }
+                  CLONE
+                    done
+
+                    echo "Waiting for clone PVCs to bind..."
+                    for c in $CLONES; do
+                      for i in $(seq 1 60); do
+                        PHASE=$(kubectl -n "$NS" get pvc "$c" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                        DEL=$(kubectl -n "$NS" get pvc "$c" -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || echo "")
+                        [ -n "$DEL" ] && { echo "ERROR: clone $c is being deleted (since $DEL)"; exit 1; }
+                        [ "$PHASE" = "Bound" ] && break
+                        sleep 5
+                      done
+                      [ "$PHASE" = "Bound" ] || { echo "Clone $c did not bind (phase=$PHASE)"; exit 1; }
+                      echo "  ✓ $c Bound"
+                    done
+                  else
+                    echo "No longhorn-backed data PVCs — all sources mounted live (local-path)."
+                  fi
+
+                  # Remove stale mounter Jobs from a crashed prior run — they
+                  # hold node resources and can mask a new run's logs. [T013044]
+                  kubectl -n "$NS" delete jobs -l app=pvc-backup,role=mounter --ignore-not-found || true
+                  kubectl -n "$NS" delete jobs -l app=pvc-backup,role=reader --ignore-not-found || true
+
+                  echo "Launching mounter Job $MOUNTER..."
+                  kubectl -n "$NS" apply -f - <<MJOB
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata:
+                    name: $${MOUNTER}
+                    labels: { app: pvc-backup, role: mounter }
+                  spec:
+                    backoffLimit: 0
+                    ttlSecondsAfterFinished: 86400
+                    activeDeadlineSeconds: 3000
+                    template:
+                      metadata:
+                        labels: { app: pvc-backup, role: mounter }
+                      spec:
+                        restartPolicy: Never
+                         # Placement: the writer mounts only backup-pvc and is
+                         # pinned to that PV's node. Data volumes are read by
+                         # per-volume reader Jobs (each lands on its own PV's
+                         # node) and streamed in by the orchestrator. [T901105]
+                        securityContext:
+                          runAsNonRoot: true
+                          runAsUser: 65534
+                          fsGroup: 65534
+                          supplementalGroups: [33]
+                          seccompProfile: { type: RuntimeDefault }
+                        containers:
+                          - name: backup
+                            image: pgvector/pgvector:0.8.7-pg18@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+                            imagePullPolicy: IfNotPresent
+                            securityContext:
+                              allowPrivilegeEscalation: false
+                              runAsNonRoot: true
+                              runAsUser: 65534
+                              capabilities: { drop: ["ALL"] }
+                            env:
+                              - name: BACKUP_STAMP
+                                value: "$${STAMP}"
+                              - name: BRAND
+                                valueFrom: { configMapKeyRef: { name: backup-config, key: BRAND } }
+                              - name: FILEN_DEFAULT_UPLOAD_PATH
+                                valueFrom: { configMapKeyRef: { name: backup-config, key: FILEN_DEFAULT_UPLOAD_PATH } }
+                              - name: FILEN_EMAIL
+                                valueFrom: { secretKeyRef: { name: workspace-secrets, key: FILEN_EMAIL, optional: true } }
+                              - name: FILEN_PASSWORD
+                                valueFrom: { secretKeyRef: { name: workspace-secrets, key: FILEN_PASSWORD, optional: true } }
+                            command: ["/bin/bash", "-c"]
+                            args:
+                              - |
+                                set -euo pipefail
+                                # Writer: owns backup-pvc (and therefore its node). The
+                                # orchestrator streams one encrypted archive per data
+                                # volume into this container via kubectl exec, because
+                                # local-path data PVCs live on different nodes and no
+                                # single pod can mount them all. [T901105]
+                                BACKUP_DIR=/backups/pvc-\$${BACKUP_STAMP}
+                                mkdir -p "\$${BACKUP_DIR}"
+                                touch /staging/.ready
+                                echo "Writer ready: \$${BACKUP_DIR} — waiting for streams..."
+                                for i in \$$(seq 1 1400); do
+                                  [ -f /staging/.streams-done ] && break
+                                  sleep 2
+                                done
+                                [ -f /staging/.streams-done ] || { echo "ERROR: orchestrator never signalled streams-done"; exit 1; }
+                                FAILED=\$$(cat /staging/.streams-done)
+
+                                find /backups -maxdepth 1 -type d -name 'pvc-*' -mtime +30 -exec rm -rf {} +
+                                printf '%s' "\$${FILEN_DEFAULT_UPLOAD_PATH}" > /staging/.filen_path
+                                printf '%s' "pvc-\$${BACKUP_STAMP}" > /staging/.done
+                                echo "PVC backup complete: \$${BACKUP_DIR}"
+                                ls -lh "\$${BACKUP_DIR}/"
+                                [ "\$${FAILED}" -eq 0 ] || { echo "WARN: \$${FAILED} volume backup(s) failed"; exit 1; }
+                            volumeMounts:
+                              - { name: backup-storage,   mountPath: /backups }
+                              - { name: staging,          mountPath: /staging }
+                            resources:
+                              requests: { memory: 256Mi, cpu: "200m" }
+                              limits:   { memory: 1Gi,   cpu: "1" }
+                          - name: filen-upload
+                            image: node:22.23.3-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+                            imagePullPolicy: IfNotPresent
+                            securityContext:
+                              allowPrivilegeEscalation: false
+                              capabilities: { drop: ["ALL"] }
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - |
+                                if [ -z "\$${FILEN_EMAIL}" ] || [ -z "\$${FILEN_PASSWORD}" ]; then
+                                  echo "Filen not configured — skipping remote backup"
+                                  until [ -f /staging/.done ]; do sleep 2; done
+                                  exit 0
+                                fi
+                                echo "Waiting for backup to complete..."
+                                until [ -f /staging/.done ]; do sleep 2; done
+                                STAMP=\$$(cat /staging/.done)
+                                UPLOAD_PATH=\$$(cat /staging/.filen_path)
+                                echo "Installing Filen CLI..."
+                                export HOME=/tmp
+                                # Version pin [T013300]: die Remote-Retention unten haengt am
+                                # ls/rm-Verhalten der CLI — bewusst heben, nicht blind.
+                                npm install -g @filen/cli@0.0.39 --prefix /tmp/npm-global 2>&1 \
+                                  || { echo "ERROR: filen-cli install failed"; exit 1; }
+                                export PATH="/tmp/npm-global/bin:\$PATH"
+                                echo "Uploading \$${STAMP} to Filen: \$${UPLOAD_PATH}/\$${STAMP}/"
+                                if ! filen --email "\$${FILEN_EMAIL}" --password "\$${FILEN_PASSWORD}" \
+                                     upload "/backups/\$${STAMP}/" "\$${UPLOAD_PATH}/\$${STAMP}/"; then
+                                  echo "ERROR: Filen remote upload failed for \$${STAMP} — local backup on backup-pvc is intact."
+                                  echo "       Likely cause: invalid credentials, or 2FA enabled (this job requires 2FA OFF)."
+                                  exit 1
+                                fi
+                                echo "Filen upload done"
+
+                                # ── Remote retention [T013300] ──────────────
+                                # Remote Generationen wachsen um ~154 MiB/Tag; ohne Prune ist
+                                # der Filen-Account (10 GiB Free Tier) in ~2 Monaten voll
+                                # ("Maximum storage reached", Vorgeschichte T013037). Behalte
+                                # nur die neuesten N Generationen unter UPLOAD_PATH. CLI-
+                                # Mechanik laut T013037-Messung: jeder Aufruf ist ein Login
+                                # (~30/min Limit → sleep-Throttle), trash-empty/trash-delete
+                                # hängen (nur Soft-Delete via rm -y), jeder Call braucht ein
+                                # timeout (CLI kann stallen).
+                                RETENTION=\$${FILEN_REMOTE_RETENTION:-14}
+                                PRUNE_FAILED=0
+                                echo "Remote retention: listing \$${UPLOAD_PATH} ..."
+                                if timeout 120 filen --skip-update --no-autocomplete \
+                                     --email "\$${FILEN_EMAIL}" --password "\$${FILEN_PASSWORD}" \
+                                     ls "\$${UPLOAD_PATH}" > /tmp/remote-ls.txt 2>/dev/null; then
+                                  # Streng auf Generierungs-Muster begrenzt (db-Stamps und
+                                  # pvc--Stamps) — alles andere im Verzeichnis wird nie
+                                  # angefasst. Lexikografische Sortierung von
+                                  # YYYYMMDD-HHMMSS-Namen IST chronologische Ordnung.
+                                  tr -s ' \t' '\n' < /tmp/remote-ls.txt \
+                                    | grep -E '^(pvc-)?[0-9]{8}-[0-9]{6}$' | sort > /tmp/generations.txt
+                                  COUNT=\$$(wc -l < /tmp/generations.txt)
+                                  DELETE_COUNT=\$$((COUNT - RETENTION))
+                                  if [ "\$${DELETE_COUNT}" -gt 0 ]; then
+                                    echo "Remote retention: \$${COUNT} Generationen gefunden — lösche älteste \$${DELETE_COUNT}, behalte neueste \$${RETENTION}"
+                                    head -n "\$${DELETE_COUNT}" /tmp/generations.txt > /tmp/delete.txt
+                                    FAILS=0
+                                    # Redirection statt Pipe: eine gepipe while-Schleife läuft
+                                    # in einer Subshell und verliert FAILS/PRUNE_FAILED.
+                                    while IFS= read -r GEN; do
+                                      [ -z "\$${GEN}" ] && continue
+                                      if timeout 90 filen --skip-update --no-autocomplete \
+                                           --email "\$${FILEN_EMAIL}" --password "\$${FILEN_PASSWORD}" \
+                                           rm -y "\$${UPLOAD_PATH}/\$${GEN}"; then
+                                        echo "  pruned old generation: \$${GEN}"
+                                      else
+                                        echo "ERROR: prune failed for \$${UPLOAD_PATH}/\$${GEN}"
+                                        FAILS=\$$((FAILS + 1))
+                                        PRUNE_FAILED=1
+                                        # Kaputter Account/CLI würde Logins sinnlos verbrennen — früh abbrechen.
+                                        [ "\$${FAILS}" -ge 5 ] && { echo "ABORT: too many prune failures"; break; }
+                                      fi
+                                      sleep 3
+                                    done < /tmp/delete.txt
+                                  else
+                                    echo "Remote retention: \$${COUNT}/\$${RETENTION} Generationen — nichts zu prunen"
+                                  fi
+                                else
+                                  echo "ERROR: could not list \$${UPLOAD_PATH} for retention"
+                                  PRUNE_FAILED=1
+                                fi
+                                # Ein fehlgeschlagener Prune darf nicht still geschluckt werden:
+                                # er reproduziert die Quota-Voll-Outage schleichend. Exit non-zero,
+                                # damit der Fehler als Failed Job sichtbar wird (gleiche
+                                # Philosophie wie beim Upload-Fehler oben).
+                                [ "\$${PRUNE_FAILED}" -eq 0 ] || exit 1
+                            env:
+                              - name: FILEN_EMAIL
+                                valueFrom: { secretKeyRef: { name: workspace-secrets, key: FILEN_EMAIL, optional: true } }
+                              - name: FILEN_PASSWORD
+                                valueFrom: { secretKeyRef: { name: workspace-secrets, key: FILEN_PASSWORD, optional: true } }
+                            volumeMounts:
+                              - { name: backup-storage, mountPath: /backups, readOnly: true }
+                              - { name: staging,        mountPath: /staging, readOnly: true }
+                            resources:
+                              requests: { memory: 256Mi, cpu: "100m" }
+                              limits:   { memory: 512Mi, cpu: "500m" }
+                        volumes:
+                          - name: backup-storage
+                            persistentVolumeClaim: { claimName: backup-pvc }
+                          - name: staging
+                            emptyDir: {}
+                  MJOB
+
+                  echo "Waiting for writer pod..."
+                  WPOD=""
+                  for i in $(seq 1 60); do
+                    WPOD=$(kubectl -n "$NS" get pod -l job-name="$MOUNTER" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+                    [ -n "$WPOD" ] && break
+                    sleep 2
+                  done
+                  [ -n "$WPOD" ] || { echo "ERROR: writer pod for $MOUNTER never appeared"; exit 1; }
+                  kubectl -n "$NS" wait --for=condition=Ready pod/"$WPOD" --timeout=600s \
+                    || { echo "ERROR: writer pod not ready (backup-pvc unschedulable?)"; kubectl -n "$NS" describe pod "$WPOD" | tail -20; exit 1; }
+                  for i in $(seq 1 60); do
+                    kubectl -n "$NS" exec "$WPOD" -c backup -- test -f /staging/.ready && break
+                    sleep 2
+                  done
+
+                  FAILED=0
+                  # One reader Job per data volume: the scheduler places it on the
+                  # PV's node (local-path node affinity). The archive is built in
+                  # the reader and streamed into the writer, so volumes on
+                  # different nodes never have to be mounted together. [T901105]
+                  stream_volume() {
+                    LABEL="$1"; CLAIM="$2"; OUT="$3"
+                    RJOB="pvc-backup-read-$${LABEL}-$${STAMP}"
+                    echo "Backing up $${LABEL} (claim $${CLAIM}) via reader $${RJOB}..."
+                    kubectl -n "$NS" apply -f - <<READER
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata:
+                    name: $${RJOB}
+                    labels: { app: pvc-backup, role: reader }
+                  spec:
+                    backoffLimit: 0
+                    ttlSecondsAfterFinished: 3600
+                    activeDeadlineSeconds: 3000
+                    template:
+                      metadata:
+                        labels: { app: pvc-backup, role: reader }
+                      spec:
+                        restartPolicy: Never
+                        securityContext:
+                          runAsNonRoot: true
+                          runAsUser: 65534
+                          fsGroup: 65534
+                          supplementalGroups: [33]
+                          seccompProfile: { type: RuntimeDefault }
+                        containers:
+                          - name: reader
+                            image: pgvector/pgvector:0.8.7-pg18@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+                            imagePullPolicy: IfNotPresent
+                            securityContext:
+                              allowPrivilegeEscalation: false
+                              runAsNonRoot: true
+                              runAsUser: 65534
+                              capabilities: { drop: ["ALL"] }
+                            env:
+                              - name: BACKUP_PASSPHRASE
+                                valueFrom: { secretKeyRef: { name: workspace-secrets, key: BACKUP_PASSPHRASE } }
+                            command: ["sleep", "3000"]
+                            volumeMounts:
+                              - { name: data, mountPath: /data, readOnly: true }
+                            resources:
+                              requests: { memory: 128Mi, cpu: "100m" }
+                              limits:   { memory: 512Mi, cpu: "1" }
+                        volumes:
+                          - name: data
+                            persistentVolumeClaim: { claimName: $${CLAIM}, readOnly: true }
+                  READER
+                    RPOD=""
+                    for i in $(seq 1 60); do
+                      RPOD=$(kubectl -n "$NS" get pod -l job-name="$RJOB" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+                      [ -n "$RPOD" ] && break
+                      sleep 2
+                    done
+                    if [ -z "$RPOD" ] || ! kubectl -n "$NS" wait --for=condition=Ready pod/"$RPOD" --timeout=600s; then
+                      echo "  ✗ $${LABEL} reader not ready (unschedulable?)"
+                      [ -n "$RPOD" ] && kubectl -n "$NS" describe pod "$RPOD" | tail -15
+                      FAILED=$((FAILED+1))
+                      return 0
+                    fi
+                    if [ -z "$(kubectl -n "$NS" exec "$RPOD" -- ls -A /data 2>/dev/null)" ]; then
+                      echo "  ⚠ $${LABEL} empty — skipping"
+                      return 0
+                    fi
+                    rm -f /tmp/reader-rc
+                    {
+                      if kubectl -n "$NS" exec "$RPOD" -- bash -c 'set -o pipefail; tar czf - -C /data . | openssl enc -aes-256-cbc -salt -pbkdf2 -pass env:BACKUP_PASSPHRASE'; then
+                        echo 0 > /tmp/reader-rc
+                      else
+                        echo 1 > /tmp/reader-rc
+                      fi
+                    } | kubectl -n "$NS" exec -i "$WPOD" -c backup -- sh -c "cat > /backups/pvc-$${STAMP}/$${OUT}" || echo 1 > /tmp/reader-rc
+                    SIZE=$(kubectl -n "$NS" exec "$WPOD" -c backup -- stat -c %s "/backups/pvc-$${STAMP}/$${OUT}" 2>/dev/null || echo 0)
+                    if [ "$(cat /tmp/reader-rc 2>/dev/null || echo 1)" = "0" ] && [ "$SIZE" -gt 0 ]; then
+                      echo "  ✓ $${LABEL} OK ($${SIZE} bytes)"
+                    else
+                      echo "  ✗ $${LABEL} FAILED"
+                      FAILED=$((FAILED+1))
+                    fi
+                    kubectl -n "$NS" delete job "$RJOB" --ignore-not-found --wait=false || true
+                  }
+
+                  stream_volume nextcloud-data nextcloud-data-pvc nextcloud-files.tar.gz.enc
+                  if [ "$VW_PRESENT" = "1" ]; then
+                    stream_volume vaultwarden-data "$VW_CLAIM" vaultwarden-data.tar.gz.enc
+                  else
+                    echo "  - vaultwarden-data: PVC not present, skipped"
+                  fi
+
+                  kubectl -n "$NS" exec "$WPOD" -c backup -- sh -c "echo $FAILED > /staging/.streams-done"
+
+                  echo "Waiting for mounter Job to finish..."
+                  kubectl -n "$NS" wait --for=condition=complete --timeout=3000s job/"$MOUNTER" &
+                  CW=$!
+                  kubectl -n "$NS" wait --for=condition=failed --timeout=3000s job/"$MOUNTER" &
+                  FW=$!
+                  wait -n || true
+                  kill "$CW" "$FW" 2>/dev/null || true
+                  STATUS=$(kubectl -n "$NS" get job "$MOUNTER" -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')
+                  echo "Mounter logs:"
+                  kubectl -n "$NS" logs job/"$MOUNTER" --all-containers --tail=80 || true
+                  echo "Mounter terminal status: Complete=${STATUS:-Unknown}"
+                  [ "$STATUS" = "True" ] || { echo "Backup mounter did not complete"; exit 1; }
+                  echo "pvc-backup orchestration succeeded."
+              resources:
+                requests: { memory: 64Mi, cpu: "50m" }
+                limits:   { memory: 256Mi, cpu: "500m" }

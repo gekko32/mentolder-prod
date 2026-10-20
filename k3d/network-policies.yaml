@@ -1,0 +1,662 @@
+# ═══════════════════════════════════════════════════════════════════
+# Kubernetes NetworkPolicies — Default-Deny + selektive Freigaben
+# Namespace: workspace (über kustomize namespace-Direktive gesetzt)
+# NUR VIA TASK DEPLOYEN [T901777]: VAR-Platzhalter brauchen den
+# Task/Flux-Render-Pfad (envsubst). Direktes 'kubectl apply -f' hinterlaesst
+# Literale. Cluster-CIDRs POD_CIDR/SERVICE_CIDR/POD_VTEP_IP aus
+# environments/schema.yaml (k3s-Defaults 10.42/10.43, devmesh 10.52/10.53).
+# ═══════════════════════════════════════════════════════════════════
+
+# Default: alle eingehenden Verbindungen blockieren
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+# Default: alle ausgehenden Verbindungen blockieren
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+---
+# DNS-Auflösung erlauben (kube-dns, Port 53 UDP + TCP)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+---
+# Pod-zu-Pod-Kommunikation innerhalb des workspace-Namespace erlauben
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace-egress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    # namespaceSelector statt podSelector:{} — Workaround für den
+    # k3s-NetPol-Controller-Bug (seit 2026-10-04 ~19:46): podSelector-Peers
+    # bekommen cluster-weit leere ipsets, same-namespace-Egress wird gedroppt.
+    # namespaceSelector-Peers funktionieren (Analyse siehe
+    # prod-fleet/components/fleet-common/netpol-deny-cross-brand.yaml).
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ${WORKSPACE_NAMESPACE}
+---
+# Externe Verbindungen (Internet) erlauben
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-internet-egress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+---
+# Kubernetes-API-Server erreichen (T000368).
+# In-cluster CronJobs (pvc-backup, tests-results-retention) rufen die API via
+# kubectl auf. allow-internet-egress schließt 10.0.0.0/8 aus, deshalb braucht
+# es eine gezielte Freigabe. WICHTIG: kube-router wertet Egress gegen den
+# POST-DNAT-Endpoint aus — der apiserver läuft hostNetwork, seine Endpoints
+# sind die CP-Node-IPs (10.20.0.0/24:6443), NICHT die ClusterIP. Eine reine
+# ClusterIP-Freigabe (${SERVICE_CIDR}:443, k3s-Default 10.43.0.0/16) reicht
+# daher NICHT; die Node-CIDR auf
+# 6443 ist die operative Regel (empirisch verifiziert: 12/12 + kubectl OK).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apiserver-egress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  # CP-Node-IPs = apiserver-Endpoints nach DNAT (fleet wg-fleet-Subnet;
+  # T016533: + privates Hetzner-Netz — gekko ohne WG, DNAT-Ziele sind
+  # 192.168.200.2-4:6443; ohne diese Regel lehnt kube-router Pod→API ab
+  # und tls-sync/pvc-backup (kubectl im Job) bleiben rot).
+  - to:
+    - ipBlock:
+        cidr: 10.20.0.0/24
+    ports:
+    - protocol: TCP
+      port: 6443
+  - to:
+    - ipBlock:
+        cidr: 192.168.200.0/24
+    ports:
+    - protocol: TCP
+      port: 6443
+  # ClusterIP der kubernetes.default Service (defense-in-depth / pre-DNAT-Match)
+  - to:
+    - ipBlock:
+        cidr: ${SERVICE_CIDR}
+    ports:
+    - protocol: TCP
+      port: 443
+---
+# LLM-Gateway-Hosts auf dem wg-mesh erreichen (192.168.100.x mentolder, 10.13.14.x korczewski)
+# allow-internet-egress blockiert RFC1918 — diese Policy öffnet gezielt die wg-mesh-Subnets.
+# [T016450] FreeToken-Port 1919, Kubernetes-API, DNS und Pod-Netzwerk hinzugefügt.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-llm-gateway-egress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  # LLM-Gateway auf dem wg-mesh (mentolder)
+  - to:
+    - ipBlock:
+        cidr: 192.168.100.0/24
+    ports:
+    - protocol: TCP
+      port: 1234
+    - protocol: TCP
+      port: 1919
+    - protocol: TCP
+      port: 8081
+    - protocol: TCP
+      port: 8083
+    - protocol: TCP
+      port: 8189
+  # LLM-Gateway auf dem wg-mesh (korczewski)
+  - to:
+    - ipBlock:
+        cidr: 10.13.14.0/24
+    ports:
+    - protocol: TCP
+      port: 1234
+    - protocol: TCP
+      port: 1919
+    - protocol: TCP
+      port: 8081
+    - protocol: TCP
+      port: 8083
+    - protocol: TCP
+      port: 8189
+  # Kubernetes API Server (ClusterIP + Node-IPs)
+  - to:
+    - ipBlock:
+        cidr: ${SERVICE_CIDR}
+    - ipBlock:
+        cidr: 10.20.0.0/24
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 6443
+  # DNS (kube-system)
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # In-cluster Services (shared-db, etc.)
+  - to:
+    - ipBlock:
+        cidr: ${POD_CIDR}
+    ports:
+    - protocol: TCP
+      port: 5432
+---
+# Pod-zu-Pod-Kommunikation innerhalb des workspace-Namespace (Eingang) erlauben
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector: {}
+---
+# Traefik-Ingress aus kube-system erlauben.
+# Traefik läuft im hostNetwork-Modus (podIP = 192.168.100.1), sendet aber via
+# flannel.1 mit src-IP ${POD_VTEP_IP} (VTEP des Control-Plane-Nodes,
+# k3s-Default 10.42.0.0 — Basisadresse von ${POD_CIDR}). Deshalb
+# muss neben dem namespaceSelector auch der ipBlock für den VTEP freigegeben werden.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-traefik-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: traefik
+    - ipBlock:
+        cidr: ${POD_VTEP_IP}/32
+---
+# workspace CronJobs → website API (billing, notify-unread)
+# Uses ipBlock for service CIDR (ClusterIP before DNAT) and pod CIDR (post-DNAT).
+# Short-lived CronJob pods have no stable label, so podSelector: {} (all workspace pods).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-cronjobs-to-website-egress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - ipBlock:
+        cidr: ${SERVICE_CIDR}   # service CIDR (ClusterIP before DNAT)
+    - ipBlock:
+        cidr: ${POD_CIDR}   # pod CIDR (after DNAT)
+    ports:
+    - port: 80
+      protocol: TCP
+    - port: 4321
+      protocol: TCP
+---
+# talk-transcriber → website-Namespace (save-transcript API)
+# Uses ipBlock for the service CIDR (${SERVICE_CIDR}) because namespaceSelector
+# alone doesn't match ClusterIP traffic before DNAT.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-transcriber-to-website-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: talk-transcriber
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - ipBlock:
+        cidr: ${SERVICE_CIDR}   # service CIDR
+    - ipBlock:
+        cidr: ${POD_CIDR}   # pod CIDR (post-DNAT)
+    ports:
+    - port: 80
+      protocol: TCP
+    - port: 4321
+      protocol: TCP
+---
+# workspace-Pods → Traefik (kube-system) für interne HTTPS-Calls (z.B. Talk HPB Backend-API)
+# Nextcloud Talk ruft signaling.korczewski.de intern über Traefik auf; CoreDNS löst
+# den Hostnamen auf die Traefik-ClusterIP auf, daher muss Egress auf Port 8443/8000 erlaubt sein.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-traefik-egress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: traefik
+    ports:
+    - port: 8443
+      protocol: TCP
+    - port: 8000
+      protocol: TCP
+---
+# spreed-signaling → Janus MCU (coturn namespace, port 8188 WebSocket)
+# Janus uses hostNetwork:true so its IP is a k3d node IP (172.19.0.0/16).
+# The namespace selector alone doesn't work for hostNetwork pods because the
+# traffic goes to a node IP rather than an overlay pod IP.
+# We allow the node network CIDR and the cluster service CIDR explicitly so
+# both direct node traffic (DNAT resolved) and ClusterIP traffic work.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-signaling-coturn-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: spreed-signaling
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: coturn
+    ports:
+    - port: 8188
+      protocol: TCP
+  - to:
+    - ipBlock:
+        cidr: 172.19.0.0/16   # k3d node network (Janus hostNetwork IP)
+    ports:
+    - port: 8188
+      protocol: TCP
+  - to:
+    - ipBlock:
+        cidr: ${SERVICE_CIDR}    # cluster service CIDR (Janus ClusterIP)
+    ports:
+    - port: 8188
+      protocol: TCP
+  - to:
+    - ipBlock:
+        cidr: 10.13.14.0/24   # korczewski wg-mesh node IPs (Janus hostNetwork after DNAT)
+    ports:
+    - port: 8188
+      protocol: TCP
+  - to:
+    - ipBlock:
+        cidr: 10.20.0.0/24    # fleet wg-mesh node IPs (Janus hostNetwork on a fleet CP node)
+    ports:
+    - port: 8188
+      protocol: TCP
+  - to:
+    - ipBlock:
+        cidr: 192.168.200.0/24    # T016533: Fleet-Privatnetz (Janus hostNetwork-CP nach DNAT)
+    ports:
+    - port: 8188
+      protocol: TCP
+---
+# RustDesk hbbs/hbbr — hostNetwork:true, pinned on ${TURN_NODE} via nodeSelector.
+# Their pod IPs resolve to k3d node IPs (172.19.0.0/16) or wg-mesh node IPs,
+# so egress from rustdesk namespace pods needs the same node-network exceptions
+# as the Janus policy above. Without this, the rustdesk web-client cannot
+# reach hbbs/hbbr on their native ports (21115-21119).
+#
+# SA-GR-04 (T014547): hostNetwork pods bypass NetworkPolicies by design.
+# This exception exists for other pods that need to reach rustdesk services
+# FROM within the cluster (e.g., the rustdesk-web-bridge in workspace namespace).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-rustdesk-ingress-hostnet
+  namespace: rustdesk
+spec:
+  podSelector:
+    matchLabels:
+      app: hbbs
+  policyTypes:
+  - Ingress
+  ingress:
+  # Direct node network (hostNetwork IP — k3d node CIDR)
+  - from:
+    - ipBlock:
+        cidr: 172.19.0.0/16
+    ports:
+    - port: 21115
+      protocol: TCP
+    - port: 21116
+      protocol: TCP
+    - port: 21116
+      protocol: UDP
+    - port: 21118
+      protocol: TCP
+  # wg-mesh node IPs (fleet)
+  - from:
+    - ipBlock:
+        cidr: 10.20.0.0/24
+    ports:
+    - port: 21115
+      protocol: TCP
+    - port: 21116
+      protocol: TCP
+    - port: 21116
+      protocol: UDP
+    - port: 21118
+      protocol: TCP
+  # wg-mesh node IPs (korzkewski)
+  - from:
+    - ipBlock:
+        cidr: 10.13.14.0/24
+    ports:
+    - port: 21115
+      protocol: TCP
+    - port: 21116
+      protocol: TCP
+    - port: 21116
+      protocol: UDP
+    - port: 21118
+      protocol: TCP
+---
+# Nextcloud → Collabora (workspace-office Namespace, WOPI Port 9980)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-collabora-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: nextcloud
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: workspace-office
+    ports:
+    - port: 9980
+      protocol: TCP
+---
+# shared-db: allow ingress from website namespace (website app DB access)
+# T901440: zusaetzlich website-korczewski (Website, DB website_massage) und
+# workspace-korczewski (Pocket ID, DB pocket_id_korczewski) — zentrale DB (ADR-012).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-website-to-shared-db-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: shared-db
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ${WEBSITE_NAMESPACE}
+    ports:
+    - port: 5432
+      protocol: TCP
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: website-korczewski
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: workspace-korczewski
+    ports:
+    - port: 5432
+      protocol: TCP
+---
+# pocket-id: allow ingress from website namespace (OIDC token exchange + userinfo + Admin API)
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-website-to-pocket-id-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: pocket-id
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ${WEBSITE_NAMESPACE}
+    ports:
+    - port: 1411
+      protocol: TCP
+---
+# dev-stack (workspace-dev ns): Fleet-Dev-Knoten (brett-dev, website-dev,
+# oauth2-proxy-dev/brainstorm/session-hub) brauchen Pocket-ID auf 1411 — ohne
+# diese Regel blockt workspace/default-deny-ingress sie (ECONNREFUSED, T007035).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-devstack-to-pocket-id-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: pocket-id
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: workspace-dev
+    ports:
+    - port: 1411
+      protocol: TCP
+---
+# nextcloud: allow ingress from website namespace (CalDAV, Files, Talk integration)
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-website-to-nextcloud-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: nextcloud
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ${WEBSITE_NAMESPACE}
+    ports:
+    - port: 80
+      protocol: TCP
+---
+# vaultwarden: allow health probe from website namespace (GET /alive on port 80)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-website-to-vaultwarden-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: vaultwarden
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ${WEBSITE_NAMESPACE}
+    ports:
+    - port: 80
+      protocol: TCP
+---
+# bge-embed: ingress from the website namespace on the container port (T002604)
+#
+# Die Portangabe ist 8080, nicht 8081. NetworkPolicies filtern auf dem POD-Port;
+# der Service llm-gateway-embed mappt 8081 -> 8080. Eine Policy auf 8081 waere
+# wirkungslos und der Fehler bliebe unveraendert bestehen.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-website-to-bge-embed-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: bge-embed
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ${WEBSITE_NAMESPACE}
+    ports:
+    - port: 8080
+      protocol: TCP
+---
+# bge-rerank: ingress from the website namespace on the container port (T002604)
+#
+# Bei der Migration der bge-Server vom WSL-Host in den Cluster (T002551) wurden
+# diese beiden Ausnahmen vergessen. ns workspace faehrt default-deny-ingress,
+# deshalb lief jeder Aufruf der Website ins ECONNREFUSED (kube-router REJECT),
+# waehrend derselbe Aufruf aus ns workspace heraus 200 lieferte. Wirkung: alle
+# /api/bge/*-Endpunkte und die Knowledge-Suche antworteten mit 503.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-website-to-bge-rerank-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: bge-rerank
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ${WEBSITE_NAMESPACE}
+    ports:
+    - port: 8080
+      protocol: TCP
+---
+# brett: ingress from Traefik on 3000
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: brett-ingress
+  namespace: workspace
+spec:
+  podSelector:
+    matchLabels:
+      app: brett
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: traefik
+    ports:
+    - protocol: TCP
+      port: 3000
+---
+# brett: egress to shared-db (5432) and DNS only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: brett-egress
+  namespace: workspace
+spec:
+  podSelector:
+    matchLabels:
+      app: brett
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: shared-db
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53

@@ -1,0 +1,55 @@
+# NUR VIA TASK DEPLOYEN [T901777]: Datei enthaelt Escapes/Platzhalter fuer den Task/Flux-Render-Pfad. Direktes 'kubectl apply -f' hinterlaesst Literale (siehe k3d/README.md).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: notify-unread
+  namespace: workspace
+  labels:
+    app: cronjobs
+spec:
+  # T016592: alle ausgehenden Benachrichtigungs-E-Mails sind abgeschaltet.
+  # Bewusst suspendiert statt entfernt — das Wiedereinschalten soll ein
+  # umgelegtes Feld sein, kein Manifest-Neubau. Der Endpunkt
+  # /api/cron/notify-unread bleibt bestehen und ist per CRON_SECRET geschuetzt.
+  suspend: true
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: notify
+              image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                runAsUser: 65534
+                capabilities:
+                  drop: ["ALL"]
+              command:
+                - sh
+                - -c
+                - |
+                  curl -sf -X POST \
+                    -H "Authorization: Bearer $${CRON_SECRET}" \
+                    -H "Content-Type: application/json" \
+                    http://website.${WEBSITE_NAMESPACE}.svc.cluster.local/api/cron/notify-unread
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 64Mi
+              env:
+                - name: CRON_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: workspace-secrets
+                      key: CRON_SECRET

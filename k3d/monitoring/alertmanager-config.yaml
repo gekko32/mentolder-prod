@@ -1,0 +1,38 @@
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: workspace-alerts
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  route:
+    groupBy: [alertname, namespace]
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 4h
+    receiver: operator-email
+  receivers:
+    # T900001: E-Mail-Receiver deaktiviert — kein ausgehender Benachrichtigungs-Mails mehr.
+    # SMTP-Credentials verbleiben im SealedSecret (alertmanager-smtp), werden aber nicht mehr
+    # in einer Receiver-Route verwendet. Wiedereinschalten = emailConfigs-Wiederherstellung.
+    # Vorheriger Receiver (deaktiviert, deklarativ im Repo verankert):
+    #   - name: operator-email
+    #     emailConfigs:
+    #       - sendResolved: true
+    #         to: korczewski@mailbox.org
+    #         from: ${SMTP_FROM}
+    #         smarthost: ${SMTP_HOST}:${SMTP_PORT}
+    #         authUsername: ${SMTP_USER}
+    #         authPassword:
+    #           name: alertmanager-smtp
+    #           key: SMTP_PASSWORD
+    #         requireTLS: true
+    - name: operator-email
+# Pushover-Routing bewusst entfernt [T014542]: PUSHOVER_USER/PUSHOVER_TOKEN waren
+# nie gesetzt (environments/*.yaml führen "" seit #1552), das SealedSecret
+# entschlüsselt zu leeren Werten — der Prometheus Operator verwirft deshalb die
+# komplette AlertmanagerConfig ("mandatory field userKey is empty") und legt damit
+# auch das E-Mail-Routing lahm. Wiedereinführung NUR mit nicht-leeren Credentials:
+# neues alertmanager-pushover-SealedSecret + pushoverConfigs-Receiver + critical-Route.
+# (Toter Secret-Template-Rest entfernt [T016575].)

@@ -1,0 +1,142 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: workspace
+
+resources:
+  - namespace.yaml
+  - configmap-domains.yaml
+  - secrets.yaml
+  # Shared database (one PostgreSQL, one DB per service)
+  - shared-db.yaml
+  - website-schema.yaml
+  # Kerndienste
+  - nextcloud.yaml
+  - nextcloud-redis.yaml
+  - nextcloud-notification-config-job.yaml
+  # Nextcloud Talk HPB + Whiteboard
+  # NB: coturn + janus (k3d/coturn-stack) and Collabora
+  # (k3d/office-stack) are deployed separately via task workspace:office:deploy
+  # because they need dedicated privileged namespaces and can't be
+  # transformed by this kustomization's `namespace: workspace` directive.
+  - talk-hpb.yaml
+  - whiteboard
+  - talk-recording.yaml
+  - vaultwarden.yaml
+  # Buchhaltung
+  # Traefik dashboard SSO gateway
+  - oauth2-proxy-traefik.yaml
+  - traefik-dashboard-dev.yaml
+  # Mailpit SSO gateway
+  - oauth2-proxy-mailpit.yaml
+  - mail-ingressroute-dev.yaml
+  # Brett SSO gateway
+  - oauth2-proxy-brett.yaml
+  # Coaching Studio (T001002) — studio.${PROD_DOMAIN} + studio.localhost
+  - studio.yaml
+  - oauth2-proxy-studio.yaml
+  # ComfyUI SSO gateway
+  - oauth2-proxy-comfy.yaml
+  # Backup (SA-07)
+  - backup-pvc.yaml
+  - backup-cronjob.yaml
+  # G-DB05: wöchentliche Restore-Verifikation der Backups [T014544]
+  - backup-restore-verify-cronjob.yaml
+  - pvc-backup-cronjob.yaml
+  - pvc-backup-rbac.yaml
+  - backup-config.yaml
+  - notify-unread-cronjob.yaml
+  - cronjob-scheduled-publish.yaml
+  - error-log-retention-cronjob.yaml
+  # llm-proxy-log-retention-cronjob.yaml retiriert 2026-10-14 (tickets.llm_proxy_request_log dropped).
+  - appointment-reminders-cronjob.yaml
+  # Abrechnung
+  - admin-actions-cronjobs.yaml
+  - cronjob-monthly-billing.yaml
+  - cronjob-dunning-detection.yaml
+  - einvoice-sidecar.yaml
+  # Systemisches Brett
+  - brett.yaml
+  # mentolder.de React-Site (react.mentolder.de / react.localhost)
+  - mentolder-web.yaml
+  # Mediaviewer Widget
+  - mediaviewer-widget.yaml
+  # Agent-Push ntfy-Server (T000991)
+  - ntfy.yaml
+  - oauth2-proxy-mediaviewer.yaml
+  # Sessions Server (session-<slug>.sessions.mentolder.de)
+  - sessions-server.yaml
+  # Website egress: allow Prometheus queries from factory-observability API
+  - website-allow-egress-monitoring.yaml
+  # VideoVault
+  - videovault-uploads-pvc.yaml
+  - videovault.yaml
+  - oauth2-proxy-videovault.yaml
+  # Dev-Werkzeuge
+  - mailpit.yaml
+  # SSO-gated downloads (RustDesk MSI distribution — mentolder only)
+  - downloads.yaml
+  - oauth2-proxy-downloads.yaml
+  # Wissensmanagement — Knowledge Base Ingestion CronJobs
+  - knowledge-ingest-cronjob.yaml
+  # Tests retention (prune tests/results/ nightly).
+  # Applied separately via envsubst by `workspace:deploy` so its Role+RoleBinding
+  # can land in ${WEBSITE_NAMESPACE} (cross-NS exec into the website pod) — the
+  # top-level `namespace: workspace` in this kustomization would otherwise force
+  # all retention resources into the workspace ns, where the website does NOT live.
+  # See k3d/tests-retention-cronjob.yaml.
+  # System-test cleanup CronJobs (Task 8) — same story: target ${WEBSITE_NAMESPACE}
+  # so they reach the website service via cluster DNS without an extra hop.
+  # Applied separately via envsubst by `workspace:deploy`.
+  # See k3d/cronjob-systemtest-cleanup.yaml.
+  # LLM-Gateway (GPU-Host via Docker-Bridge / wg-mesh)
+  - llm-gpu.yaml
+  # Pentest Flags (CTF)
+  - pentest-flags.yaml
+  # Pocket ID — passkey-first OIDC provider on auth.<domain>, sole OIDC
+  # issuer of the platform (T001068).
+  - pocket-id.yaml
+  - pocket-id-db-init-sql.yaml
+  # OIDC client seed Job (T001087) — idempotently registers the 16 clients
+  - pocket-id-client-seed.yaml
+  # RBAC for the seed Job to write generated secrets back into
+  # workspace-secrets on client creation (T001435)
+  - pocket-id-client-seed-rbac.yaml
+  # Netzwerksicherheit (L3)
+  - network-policies.yaml
+  # Dev-only apiserver egress (k3d Docker-network endpoint) — stripped by
+  # prod/kustomization.yaml's $patch: delete. [T001853]
+  - network-policies-dev.yaml
+  # RustDesk web-client SSO bridge (T001381)
+  # rustdesk-web-bridge.yaml is prod-only (TURN bridge needs ${TURN_OVERLAY_IP},
+  # not in the dev-envsubst list) — added as a prod-only resource in
+  # prod/kustomization.yaml instead of here, so it stays out of the dev
+  # overlay without dropping out of prod too (both extend this base).
+  - oauth2-proxy-rustdesk-web.yaml
+  # Agentic Terminal SSO bridge (T001565) — ttyd on the WSL host via wg-fleet
+  - terminal-sidekick.yaml
+  # Interne bge-Endpoints für wg-Mesh-Konsumenten + shared-db-Expositions-Policy [T016430]
+  - llm-gateway-ingress.yaml
+  - shared-db-endpoint-policy.yaml
+  - oauth2-proxy-terminal.yaml
+  # Ingress
+  - ingress.yaml
+  # Website RBAC (Role/RoleBinding in workspace ns for monitoring + backup-status API)
+  - website-rbac.yaml
+  # Website test-runner exec RBAC (T900110)
+  - website-test-runner-rbac.yaml
+
+# ConfigMaps aus lokalen Dateien (dev-spezifisch)
+configMapGenerator:
+  - name: nextcloud-oidc-config
+    files:
+      - oidc.config.php=nextcloud-oidc-dev.php
+  - name: nextcloud-extra-config
+    files:
+      - zz-extra.config.php=nextcloud-extra-config.php
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+# Hinweis: ConfigMaps aus dem Eltern-Verzeichnis (z. B. userinfo-proxy.conf,
+# adapter.ts) werden in deploy.sh per kubectl erstellt, da Kustomize keine
+# Dateien außerhalb des Basis-Verzeichnisses referenzieren darf.
