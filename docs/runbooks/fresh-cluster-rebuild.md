@@ -565,51 +565,52 @@ done
 Abweichungen sind nur dort zulässig, wo 3.2 (Images), 3.3 (Secrets) oder 2.3
 (veraltete Werte) sie verursachen.
 
-### 3.2 Images nach `ghcr.io/gekko32` spiegeln
+### 3.2 Images selbst bauen (`ghcr.io/gekko32`)
 
 Der GHCR-Namespace entspricht dem GitHub-Account. Also `ghcr.io/gekko32/*`,
-nicht `ghcr.io/gekko`.
+nicht `ghcr.io/gekko`. Kein Kopieren aus `ghcr.io/paddione`: mentolder-prod
+baut jedes Image aus eigenen Quellen.
 
 Image-Liste aus dem Render ableiten, nicht von Hand pflegen:
 
 ```bash
 kustomize build prod-fleet/mentolder prod-fleet/website-mentolder 2>/dev/null | yq -r '.. | .image? | select(.)' \
-  | grep '^ghcr.io/paddione/' | sed 's/@sha256.*//' | sort -u > images-mirror.txt
-cat images-mirror.txt
+  | grep '^ghcr.io/paddione/' | sed 's/@sha256.*//' | sort -u
 ```
 
-Stand 2026-10-20 im Cluster: `collabora-code`, `downloads-content`,
-`einvoice-sidecar`, `mcp-node`, `mentolder-web`, `studio-server` und
-`talk-transcriber` unter `ghcr.io/paddione/`. `brett`, `website` und
-`fuehrungsfunk` liegen schon unter `gekko32`.
+Stand 2026-10-21: `collabora-code`, `downloads-content`, `einvoice-sidecar`,
+`mcp-node`, `mentolder-web`, `studio-server` und `talk-transcriber`. `brett`,
+`website` und `fuehrungsfunk` bauen ihre eigenen gekko32-Repos.
 
-Neuer Workflow `.github/workflows/mirror-images.yml`:
+- Quellen aus Bachelorprojekt vendoren (`components/mentolder-web`,
+  `components/studio-server`, `docker/{collabora,einvoice-sidecar,mcp-node}`,
+  `k3d/talk-transcriber`, `rustdesk-installer`, `scripts/downloads.*`) und in
+  `VENDORED_FROM` vermerken.
+- Workflows `build-images.yml`, `build-collabora.yml` (Push auf `main`, PRs nur
+  Build) und `build-downloads.yml` (nur manuell, privat, Repo-Secrets
+  `RUSTDESK_CLIENT_CONFIG_STRING` und `RUSTDESK_UNATTENDED_PASSWORD`). Login mit
+  `GITHUB_TOKEN`, Tags `latest` und `sha-<commit>`.
+- Basen auf `ghcr.io/gekko32/<name>:latest` umstellen. `render.yml` löst die
+  Digests aller eigenen Images auf (Pins in `images.env`) und setzt sie per
+  `kustomize edit set image` bzw. `STUDIO_IMAGE_DIGEST`.
 
-- Trigger: `schedule` (stündlich), `workflow_dispatch`, Push auf `images-mirror.txt`.
-- `permissions: packages: write, contents: read`.
-- Pro Zeile: `crane copy ghcr.io/paddione/<name>:<tag> ghcr.io/gekko32/<name>:<tag>`
-  für `latest` und den Tag des aktuell gerenderten Digests. `crane copy` erhält
-  den Digest, cosign-Signaturen gegebenenfalls zusätzlich kopieren
-  (`cosign copy`).
-- Danach `render.yml` per `workflow_dispatch` anstoßen, falls sich ein Digest
-  geändert hat.
+Verifikation: Render-Schritt „Check image references“ in `render.yml` (keine
+`ghcr.io/paddione`-Referenz, eigene Images nur digest-gepinnt).
 
-Im Overlay alle `ghcr.io/paddione/*` per Kustomize-`images:` auf
-`ghcr.io/gekko32/*` umschreiben. Verifikation:
-`kustomize build … | grep -c 'ghcr.io/paddione'` muss `0` ergeben.
+Die ersten eigenen Builds stammen aus dem vendorten Quellstand und können sich
+vom bisher laufenden Image unterscheiden (z. B. Collabora 26.04 statt 25.04,
+studio-server neuer als das Image vom Juni). In Phase 6 abnehmen.
 
 **Manueller Schritt (GitHub-UI, keine API):** Jedes neue Paket ist zunächst
-privat. Für jedes Paket unter
+privat. Für jedes Paket außer `downloads-content` unter
 `https://github.com/users/gekko32/packages/container/<name>/settings` die
-Sichtbarkeit auf **Public** setzen. Danach entfallen `ghcr-pull-secret` und
-`ghcr-auth` im neuen Cluster.
+Sichtbarkeit auf **Public** setzen und das Paket mit diesem Repo verknüpfen.
+`downloads-content` bleibt privat (eingebackenes Passwort). Danach braucht der
+neue Cluster `ghcr-pull-secret` nur noch für `downloads-content`, mit einem
+gekko32-Token.
 
-`GATE`: Operator bestätigt, dass alle Pakete öffentlich sind
-(`crane manifest ghcr.io/gekko32/<name>:latest` ohne Login für jede Zeile).
-
-Restabhängigkeit: Neue App-Versionen entstehen weiter in der CI von
-`Paddione/Bachelorprojekt` (`ghcr.io/paddione/*`). Der Mirror kopiert sie nur.
-Phase 9 darf die App-Builds deshalb nicht entfernen.
+`GATE`: Operator bestätigt, dass alle Pakete außer `downloads-content`
+öffentlich sind (`crane manifest ghcr.io/gekko32/<name>:latest` ohne Login).
 
 ### 3.3 SOPS/age einrichten
 
@@ -1322,10 +1323,8 @@ wc -l ~/mentolder-ops/phase9-candidates.txt
 
 ### 9.3 Bewusst behalten
 
-- App-Quellcode und Image-Builds (`website`, `mentolder-web`, `studio-server`,
-  `talk-transcriber`, `einvoice-sidecar`, `downloads-content`, `mcp-node`,
-  `collabora-code`). Der Mirror aus Phase 3.2 kopiert von dort. Entfernen erst,
-  wenn mentolder-prod eigene Builds hat.
+- App-Quellcode und Image-Builds für Patricks eigene Umgebungen. mentolder-prod
+  baut seit Phase 3.2 selbst und hängt nicht mehr daran.
 - Brand-Inhalte unter `website/src` (Inhalt, kein Deploy).
 - ADRs (`docs/adr/ADR-001`, `ADR-014` usw.) als Historie, mit einem Hinweis
   „abgelöst durch gekko32/mentolder-prod“.
