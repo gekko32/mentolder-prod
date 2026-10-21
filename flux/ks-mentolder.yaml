@@ -31,3 +31,22 @@ spec:
       kind: Deployment
       name: pocket-id
       namespace: workspace
+  # Wartungsfenster Fresh-Cluster-Rebuild (Runbook Phase 4.2): Merge dieses Blocks
+  # friert mentolder-Prod ein. Alle Deployments in workspace ausser shared-db
+  # (bleibt fuer pg_dumpall) auf 0, alle CronJobs pausiert. Rueckbau: PR reverten.
+  patches:
+    - target:
+        kind: Deployment
+        namespace: workspace
+        name: "^(brain|brett|downloads|einvoice-sidecar|fuehrungsfunk|mailpit|mentolder-web|nats|nextcloud|nextcloud-redis|ntfy|oauth2-proxy-brain|oauth2-proxy-brett|oauth2-proxy-downloads|oauth2-proxy-mailpit|oauth2-proxy-rustdesk-web|oauth2-proxy-session-hub|oauth2-proxy-studio|oauth2-proxy-traefik|pocket-id|sessions-server|spreed-signaling|studio-server|whiteboard)$"
+      patch: |
+        - op: add
+          path: /spec/replicas
+          value: 0
+    - target:
+        kind: CronJob
+        namespace: workspace
+      patch: |
+        - op: add
+          path: /spec/suspend
+          value: true
