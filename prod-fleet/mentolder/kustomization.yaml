@@ -11,10 +11,7 @@ kind: Kustomization
 resources:
   - ../../prod-mentolder
   - ../../prod/monitoring
-  - sessions-server.yaml
-  - oauth2-proxy-sessions.yaml
   - studio-ingress.yaml
-  - brain.yaml
   - fuehrungsfunk.yaml
 components:
   - ../components/fleet-common
@@ -431,3 +428,14 @@ patches:
       - op: replace
         path: /spec/redirectRegex/regex
         value: ^https?://(?:www\.)?mentolder\.de(.*)
+
+# Eigene Images (Quellen in diesem Repo, Builds: build-images.yml, build-downloads.yml).
+# Die Basen referenzieren ghcr.io/gekko32/<name>:latest. render.yml setzt hier vor dem
+# Render per `kustomize edit set image` die Digests von :latest (oder die Pins aus
+# images.env), damit das Artefakt digest-gepinnt ist. website und brett laufen ueber
+# WEBSITE_IMAGE_DIGEST/BRETT_IMAGE_DIGEST.
+images:
+  - name: ghcr.io/paddione/workspace-brett
+    newName: ghcr.io/gekko32/brett
+  - name: ghcr.io/paddione/website
+    newName: ghcr.io/gekko32/website

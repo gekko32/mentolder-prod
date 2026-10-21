@@ -1,0 +1,48 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: billing-dunning-detection
+  namespace: workspace
+  labels:
+    app: cronjobs
+spec:
+  schedule: "0 6 * * *" # Daily at 06:00
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: detector
+            image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+              runAsUser: 65534
+              capabilities:
+                drop: ["ALL"]
+            command:
+            - /bin/sh
+            - -c
+            # website Deployment lives in the `website` namespace (not `workspace`).
+            # -fsS: fail on HTTP errors and surface them, instead of silently exiting 0.
+            # korczewski overrides this URL to website-korczewski via prod-korczewski/patch-cronjob-urls.yaml.
+            - "curl -fsS -X POST http://website.${WEBSITE_NAMESPACE}.svc.cluster.local/api/admin/billing/dunning/run -H \"X-Cron-Secret: ${CRON_SECRET}\" || exit 1"
+            resources:
+              requests:
+                cpu: 10m
+                memory: 32Mi
+              limits:
+                memory: 64Mi
+            env:
+            - name: CRON_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: CRON_SECRET

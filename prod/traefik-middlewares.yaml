@@ -1,0 +1,135 @@
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: workspace
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: hsts-headers
+  namespace: workspace
+spec:
+  headers:
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    forceSTSHeader: true
+---
+# ── Security-HTTP-Header (interne Production-Services) ──────────────
+# X-Robots-Tag: noindex hält interne Dienste (Keycloak, Nextcloud, Vaultwarden, …)
+# aus Suchmaschinen. Die öffentliche Website nutzt bewusst NICHT diese Middleware,
+# sondern eine website-scoped Variante ohne noindex (siehe
+# prod-fleet/website-{mentolder,korczewski}/website-security-headers.yaml, T002052).
+# Der noindex MUSS hier explizit stehen, sonst entfernt ein workspace:deploy den
+# live vorhandenen Header und macht interne Login-Seiten indexierbar.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+  namespace: workspace
+spec:
+  headers:
+    customResponseHeaders:
+      X-Frame-Options: "SAMEORIGIN"
+      X-Content-Type-Options: "nosniff"
+      X-XSS-Protection: "1; mode=block"
+      Referrer-Policy: "strict-origin-when-cross-origin"
+      Permissions-Policy: "camera=(self), microphone=(self), geolocation=(), payment=()"
+      X-Robots-Tag: "noindex"
+---
+# ── Security-Header-Variante für eingebettete Widgets (iframe-kompatibel) ──
+# Verwendet für: mediaviewer.${PROD_DOMAIN} (im Admin-Sidekick als iframe)
+# Entfernt X-Frame-Options und setzt CSP frame-ancestors stattdessen,
+# damit der Widget-iframe in web.${PROD_DOMAIN} geladen werden kann.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: mediaviewer-embed-headers
+  namespace: workspace
+spec:
+  headers:
+    customResponseHeaders:
+      X-Frame-Options: ""
+      X-Content-Type-Options: "nosniff"
+      X-XSS-Protection: "1; mode=block"
+      Referrer-Policy: "strict-origin-when-cross-origin"
+      Permissions-Policy: "camera=(self), microphone=(self), geolocation=(), payment=()"
+      Content-Security-Policy: "frame-ancestors 'self' https://web.${PROD_DOMAIN}"
+---
+# ── Embed-Headers für Agentic Terminal (iframe in Admin-Sidekick) ───
+# Like mediaviewer-embed-headers but without X-Frame-Options removal
+# (terminal is embedded same way). WebSocket-compatible (ttyd protocol).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: terminal-embed-headers
+  namespace: workspace
+spec:
+  headers:
+    customResponseHeaders:
+      X-Frame-Options: ""
+      X-Content-Type-Options: "nosniff"
+      X-XSS-Protection: "1; mode=block"
+      Referrer-Policy: "strict-origin-when-cross-origin"
+      Permissions-Policy: ""
+      Content-Security-Policy: "frame-ancestors 'self' https://web.${PROD_DOMAIN}"
+---
+# ── Rate-Limiting: Keycloak (Brute-Force-Schutz) ──────────────────
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit-auth
+  namespace: workspace
+spec:
+  rateLimit:
+    average: 20
+    burst: 40
+---
+# ── Rate-Limiting: Nextcloud ───────────────────────────────────────
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit-files
+  namespace: workspace
+spec:
+  rateLimit:
+    average: 50
+    burst: 100
+---
+# ── Rate-Limiting: Vaultwarden ─────────────────────────────────────
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit-vault
+  namespace: workspace
+spec:
+  rateLimit:
+    average: 20
+    burst: 40
+---
+# ── Rate-Limiting: Website (öffentlich) ───────────────────────────
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit-web
+  namespace: workspace
+spec:
+  rateLimit:
+    average: 200
+    burst: 400
+---
+# ── Apex → Website redirect ────────────────────────────────────────
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-apex-to-web
+  namespace: workspace
+spec:
+  redirectRegex:
+    regex: "^https?://${PROD_DOMAIN}(.*)"
+    replacement: "https://web.${PROD_DOMAIN}$1"
+    permanent: true

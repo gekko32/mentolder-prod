@@ -1,0 +1,32 @@
+# k3d/dev-pod/service.yaml — ClusterIP fuer die MCP-Ports [T900107]
+#
+# Bewusst KEIN Ingress, KEINE IngressRoute und KEIN LoadBalancer.
+#
+# Begruendung (Spec "No MCP endpoint is exposed publicly"): oauth2-proxy-dev
+# traegt fuer genau diese Pfade ein --skip-auth-route (k3d/dev-stack/
+# oauth2-proxy-dev.yaml). Ein oeffentlicher Endpunkt exponierte damit
+# mcp-kubernetes unauthentifiziert — er liest den gesamten Cluster.
+# mcp-postgres liegt seit T900191 in devmesh.
+#
+# Erreichbarkeit laeuft ueber das wg-Mesh. Das Service-Netz (fleet/k3s-Default
+# 10.43.0.0/16, je Cluster SERVICE_CIDR aus environments/schema.yaml) wird
+# NICHT ueber den Tunnel geroutet (docs/agent-guide/maps/networks-map.md),
+# das Pod-Netz (Default 10.42.0.0/16, je Cluster POD_CIDR) dagegen schon;
+# Arbeitsplatz-Clients erreichen die Ports entsprechend ueber die Pod-Adresse
+# bzw. weiterhin ueber kubectl port-forward gegen diesen Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dev-pod
+  labels:
+    app: dev-pod
+spec:
+  type: ClusterIP
+  selector:
+    app: dev-pod
+  ports:
+    - { name: kubernetes, port: 8080, targetPort: 8080, protocol: TCP }
+    - { name: github, port: 3002, targetPort: 3002, protocol: TCP }
+    - { name: ticket, port: 3003, targetPort: 3003, protocol: TCP }
+    - { name: task-runner, port: 3005, targetPort: 3005, protocol: TCP }
+    - { name: codebase-mem, port: 3006, targetPort: 3006, protocol: TCP }

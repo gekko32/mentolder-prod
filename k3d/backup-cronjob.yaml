@@ -1,0 +1,374 @@
+# NUR VIA TASK DEPLOYEN [T901777]: Datei enthaelt Escapes/Platzhalter fuer den Task/Flux-Render-Pfad. Direktes 'kubectl apply -f' hinterlaesst Literale (siehe k3d/README.md).
+# ═══════════════════════════════════════════════════════════════════
+# Automated DB Backup — daily PostgreSQL dumps with AES-256 encryption
+# SA-07: Daily at 02:00 UTC, 30-day retention
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: db-backup
+  namespace: workspace
+  labels:
+    app: backup
+  annotations:
+    graph.bachelorprojekt.de/depends-on: shared-db
+spec:
+  schedule: "0 2 * * *"
+  # A second backup cannot usefully run while the first still owns backup-pvc.
+  # This also prevents a stuck upload sidecar from accumulating daily Pods and
+  # exhausting CPU requests on the PVC's node.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # The completion marker lives on emptyDir. If the upload container
+      # restarts after backup completed, that marker can be lost; cap the Job
+      # so it releases its requests instead of waiting forever.
+      activeDeadlineSeconds: 7200
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: db-backup
+        spec:
+          restartPolicy: OnFailure
+          # Prefer to co-locate with shared-db (same-node pg_dump is faster and avoids
+          # cross-node routing) but don't block scheduling if that node is full.
+          # The backup connects via the shared-db Service, so any reachable node works.
+          affinity:
+            podAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    labelSelector:
+                      matchLabels:
+                        app: shared-db
+                    topologyKey: kubernetes.io/hostname
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            fsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              # Debian-based image: has openssl pre-installed (unlike postgres-alpine).
+              # IfNotPresent avoids pulling on every run in case DNS is unreliable.
+              image: pgvector/pgvector:0.8.7-pg18@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: NEXTCLOUD_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: workspace-secrets
+                      key: NEXTCLOUD_DB_PASSWORD
+                - name: VAULTWARDEN_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: workspace-secrets
+                      key: VAULTWARDEN_DB_PASSWORD
+                - name: WEBSITE_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: workspace-secrets
+                      key: WEBSITE_DB_PASSWORD
+                # T901440: neue Massage-Keys, optional — fehlende Keys duerfen
+                # bestehende Backups nicht abbrechen (Skip-Logik im Skript).
+                - name: WEBSITE_MASSAGE_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: workspace-secrets
+                      key: WEBSITE_MASSAGE_DB_PASSWORD
+                      optional: true
+                - name: POCKET_ID_KORCZEWSKI_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: workspace-secrets
+                      key: POCKET_ID_KORCZEWSKI_DB_PASSWORD
+                      optional: true
+                - name: BACKUP_PASSPHRASE
+                  valueFrom:
+                    secretKeyRef:
+                      name: workspace-secrets
+                      key: BACKUP_PASSPHRASE
+                - name: BRAND
+                  valueFrom:
+                    configMapKeyRef:
+                      name: backup-config
+                      key: BRAND
+                - name: FILEN_DEFAULT_UPLOAD_PATH
+                  valueFrom:
+                    configMapKeyRef:
+                      name: backup-config
+                      key: FILEN_DEFAULT_UPLOAD_PATH
+                - name: FILEN_EMAIL
+                  valueFrom:
+                    secretKeyRef:
+                      name: workspace-secrets
+                      key: FILEN_EMAIL
+                      optional: true
+                - name: FILEN_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: workspace-secrets
+                      key: FILEN_PASSWORD
+                      optional: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                runAsUser: 65534
+                capabilities:
+                  drop: ["ALL"]
+              command: ["/bin/bash", "-c"]
+              # Shell vars below (STAMP, BACKUP_DIR, PASS, FILEN_PATH) are evaluated
+              # by the container shell at runtime — NOT Taskfile envsubst targets.
+              args:
+                - |
+                  # fail-loud: -e exits on any error, -u catches missing env vars,
+                  # -o pipefail propagates pg_dump failures through redirects/pipes.
+                  set -euo pipefail
+                  # Wait for pod network to settle; ClusterIP routes via kube-proxy
+                  # take a few seconds to become active for newly started pods.
+                  sleep 15
+
+                  # Pre-flight: refuse to start if shared-db isn't reachable.
+                  # Without this, pg_dump's `> file` redirect creates an empty file
+                  # before pg_dump can fail, leaving a 0-byte "backup" on disk.
+                  echo "Pre-flight: pg_isready against shared-db..."
+                  if ! pg_isready -h shared-db -t 30 -q; then
+                    echo "FATAL: shared-db is not reachable — refusing to write empty dumps." >&2
+                    exit 1
+                  fi
+
+                  STAMP=$(date +%Y%m%d-%H%M%S)
+                  BACKUP_DIR=/backups/$${STAMP}
+                  mkdir -p "$${BACKUP_DIR}"
+
+                  # Dump all databases (all on shared-db instance).
+                  # T901440: website_massage/pocket_id_korczewski erst nach
+                  # Operator-Einrichtung (Secrets versiegelt) verbindlich; vorher
+                  # explizit als unkonfiguriert ueberspringen, ohne bestehende
+                  # Backups abzubrechen. Fehlende Passwoerter bestehender DBs
+                  # bleiben ein harter Fehler.
+                  for db in nextcloud vaultwarden website website_massage pocket_id_korczewski; do
+                    case "$${db}" in
+                      nextcloud)   PASS="$${NEXTCLOUD_DB_PASSWORD}" ;;
+                      vaultwarden) PASS="$${VAULTWARDEN_DB_PASSWORD}" ;;
+                      website)     PASS="$${WEBSITE_DB_PASSWORD}" ;;
+                      website_massage)      PASS="$${WEBSITE_MASSAGE_DB_PASSWORD:-}" ;;
+                      pocket_id_korczewski) PASS="$${POCKET_ID_KORCZEWSKI_DB_PASSWORD:-}" ;;
+                    esac
+                    if [ -z "$${PASS:-}" ]; then
+                      case "$${db}" in
+                        website_massage|pocket_id_korczewski)
+                          echo "Skipping $${db}: password not configured yet (T901440) — existing backups continue."
+                          continue
+                          ;;
+                        *)
+                          echo "FATAL: password for $${db} is empty." >&2
+                          exit 1
+                          ;;
+                      esac
+                    fi
+                    DUMP="$${BACKUP_DIR}/$${db}.dump"
+                    echo "Backing up $${db}..."
+                    PGPASSWORD="$${PASS}" pg_dump -Fc \
+                      -h shared-db -U "$${db}" -d "$${db}" \
+                      > "$${DUMP}"
+                    # Post-flight: every pg_dump -Fc starts with the literal "PGDMP" magic.
+                    # An empty file or any other content here means the dump is unusable —
+                    # fail the Job rather than encrypt and publish garbage.
+                    SIZE=$(wc -c < "$${DUMP}")
+                    if [ "$${SIZE}" -lt 200 ] || ! head -c 5 "$${DUMP}" | grep -q '^PGDMP'; then
+                      echo "FATAL: $${db}.dump is $${SIZE} bytes and not a valid pg_dump archive." >&2
+                      exit 1
+                    fi
+                    echo "  $${db}.dump OK ($${SIZE} bytes)"
+                  done
+
+                  # Encrypt with AES-256 using BACKUP_PASSPHRASE from workspace-secrets
+                  for f in "$${BACKUP_DIR}"/*.dump; do
+                    openssl enc -aes-256-cbc -salt -pbkdf2 \
+                      -in "$${f}" -out "$${f}.enc" \
+                      -pass env:BACKUP_PASSPHRASE
+                    rm "$${f}"
+                  done
+
+                  # Retention: remove backups older than 30 days
+                  find /backups -maxdepth 1 -type d -mtime +30 -exec rm -rf {} +
+
+                  # Resolve runtime upload path: DB value wins, ConfigMap default is fallback
+                  FILEN_PATH=$(PGPASSWORD="$${WEBSITE_DB_PASSWORD}" \
+                    psql -h shared-db -U website -d website -t -q \
+                    -c "SELECT value FROM site_settings WHERE brand='$${BRAND}' AND key='filen_upload_path'" \
+                    2>/dev/null) || FILEN_PATH=""
+                  FILEN_PATH=$(printf '%s' "$${FILEN_PATH}" | tr -d ' \n')
+                  [ -n "$${FILEN_PATH}" ] || FILEN_PATH="$${FILEN_DEFAULT_UPLOAD_PATH}"
+
+                  # Signal filen-upload container: path + stamp
+                  printf '%s' "$${FILEN_PATH}" > /staging/.filen_path
+                  printf '%s' "$${STAMP}"      > /staging/.done
+
+                  echo "Backup complete: $${BACKUP_DIR}"
+                  ls -lh "$${BACKUP_DIR}/"
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backups
+                - name: staging
+                  mountPath: /staging
+              resources:
+                requests:
+                  memory: 256Mi
+                  cpu: "200m"
+                limits:
+                  memory: 512Mi
+                  cpu: "1"
+            - name: filen-upload
+              # Uses @filen/cli (Node.js) — rclone has no native Filen backend and
+              # webdav.filen.io resolves to 127.0.0.1 (local desktop-app only).
+              image: node:22.23.3-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              command: ["/bin/sh", "-c"]
+              # STAMP and UPLOAD_PATH below are read from /staging at runtime — NOT envsubst targets.
+              args:
+                - |
+                  # Credentials kommen ausschliesslich aus workspace-secrets. Der
+                  # frühere Override filen-upload-credentials [T013037] ist mit
+                  # T900796 entfernt (Werte waren hash-gleich zu workspace-secrets).
+                  FILEN_EMAIL="$${FILEN_EMAIL:-}"
+                  FILEN_PASSWORD="$${FILEN_PASSWORD:-}"
+
+                  if [ -z "$${FILEN_EMAIL}" ] || [ -z "$${FILEN_PASSWORD}" ]; then
+                    echo "Filen not configured — skipping remote backup"
+                    until [ -f /staging/.done ]; do sleep 2; done
+                    exit 0
+                  fi
+
+                  echo "Waiting for local backup to complete..."
+                  until [ -f /staging/.done ]; do sleep 2; done
+
+                  STAMP=$(cat /staging/.done)
+                  UPLOAD_PATH=$(cat /staging/.filen_path)
+
+                  echo "Installing Filen CLI..."
+                  export HOME=/tmp
+                  # Version pin [T013300]: die Remote-Retention unten haengt am
+                  # ls/rm-Verhalten der CLI — bewusst heben, nicht blind.
+                  npm install -g @filen/cli@0.0.39 --prefix /tmp/npm-global --silent 2>&1 | tail -3
+                  export PATH="/tmp/npm-global/bin:$$PATH"
+
+                  echo "Uploading $${STAMP} to Filen: $${UPLOAD_PATH}/$${STAMP}/"
+                  # @filen/cli authenticates with raw email+password; it derives the
+                  # PBKDF2 key / master keys / API token internally (Filen auth v2).
+                  # This invocation passes NO 2FA code, so it assumes 2FA is OFF on the
+                  # Filen account. If 2FA is enabled, the CLI blocks on an interactive
+                  # prompt forever — der timeout unten verwandelt diesen Hang in einen
+                  # sichtbaren Fehler statt 2h Deadline-Tod [T013037].
+                  UPLOAD_TIMEOUT="$${FILEN_UPLOAD_TIMEOUT:-1800}"
+                  if ! timeout "$${UPLOAD_TIMEOUT}" filen --email "$${FILEN_EMAIL}" --password "$${FILEN_PASSWORD}" \
+                       upload "/backups/$${STAMP}/" "$${UPLOAD_PATH}/$${STAMP}/"; then
+                    echo "ERROR: Filen remote upload failed for $${STAMP} — the LOCAL encrypted backup on backup-pvc is intact."
+                    echo "       Likely cause: invalid FILEN_EMAIL/FILEN_PASSWORD, 2FA enabled on the account (requires 2FA OFF),"
+                    echo "       or the $${UPLOAD_TIMEOUT}s upload timeout hit a stalled transfer."
+                    echo "       Exiting non-zero so the broken remote backup surfaces as a Failed Job instead of being silently swallowed."
+                    # restartPolicy: OnFailure retries transients in-pod; a permanent
+                    # failure escalates to a Failed Job (failedJobsHistoryLimit keeps it visible).
+                    exit 1
+                  fi
+
+                  echo "Filen upload done"
+
+                  # ── Remote retention [T013300] ──────────────────────────────
+                  # Remote Generationen wachsen um ~154 MiB/Tag; ohne Prune ist
+                  # der Filen-Account (10 GiB Free Tier) in ~2 Monaten voll
+                  # ("Maximum storage reached", Vorgeschichte T013037). Behalte
+                  # nur die neuesten N Generationen unter UPLOAD_PATH. CLI-
+                  # Mechanik laut T013037-Messung: jeder Aufruf ist ein Login
+                  # (~30/min Limit → sleep-Throttle), trash-empty/trash-delete
+                  # hängen (nur Soft-Delete via rm -y), jeder Call braucht ein
+                  # timeout (CLI kann stallen).
+                  RETENTION="$${FILEN_REMOTE_RETENTION:-14}"
+                  PRUNE_FAILED=0
+                  echo "Remote retention: listing $${UPLOAD_PATH} ..."
+                  if timeout 120 filen --skip-update --no-autocomplete \
+                       --email "$${FILEN_EMAIL}" --password "$${FILEN_PASSWORD}" \
+                       ls "$${UPLOAD_PATH}" > /tmp/remote-ls.txt 2>/dev/null; then
+                    # Streng auf Generierungs-Muster begrenzt (db-Stamps und
+                    # pvc--Stamps) — alles andere im Verzeichnis wird nie
+                    # angefasst. Lexikografische Sortierung von
+                    # YYYYMMDD-HHMMSS-Namen IST chronologische Ordnung.
+                    tr -s ' \t' '\n' < /tmp/remote-ls.txt \
+                      | grep -E '^(pvc-)?[0-9]{8}-[0-9]{6}$' | sort > /tmp/generations.txt
+                    COUNT=$(wc -l < /tmp/generations.txt)
+                    DELETE_COUNT=$((COUNT - RETENTION))
+                    if [ "$${DELETE_COUNT}" -gt 0 ]; then
+                      echo "Remote retention: $${COUNT} Generationen gefunden — lösche älteste $${DELETE_COUNT}, behalte neueste $${RETENTION}"
+                      head -n "$${DELETE_COUNT}" /tmp/generations.txt > /tmp/delete.txt
+                      FAILS=0
+                      # Redirection statt Pipe: eine gepipe while-Schleife läuft
+                      # in einer Subshell und verliert FAILS/PRUNE_FAILED.
+                      while IFS= read -r GEN; do
+                        [ -z "$${GEN}" ] && continue
+                        if timeout 90 filen --skip-update --no-autocomplete \
+                             --email "$${FILEN_EMAIL}" --password "$${FILEN_PASSWORD}" \
+                             rm -y "$${UPLOAD_PATH}/$${GEN}"; then
+                          echo "  pruned old generation: $${GEN}"
+                        else
+                          echo "ERROR: prune failed for $${UPLOAD_PATH}/$${GEN}"
+                          FAILS=$((FAILS + 1))
+                          PRUNE_FAILED=1
+                          # Kaputter Account/CLI würde Logins sinnlos verbrennen — früh abbrechen.
+                          [ "$${FAILS}" -ge 5 ] && { echo "ABORT: too many prune failures"; break; }
+                        fi
+                        sleep 3
+                      done < /tmp/delete.txt
+                    else
+                      echo "Remote retention: $${COUNT}/$${RETENTION} Generationen — nichts zu prunen"
+                    fi
+                  else
+                    echo "ERROR: could not list $${UPLOAD_PATH} for retention"
+                    PRUNE_FAILED=1
+                  fi
+                  # Ein fehlgeschlagener Prune darf nicht still geschluckt werden:
+                  # er reproduziert die Quota-Voll-Outage schleichend. Exit non-zero,
+                  # damit der Fehler als Failed Job + DBBackupJobFailed-Alert sichtbar
+                  # wird (gleiche Philosophie wie beim Upload-Fehler oben).
+                  [ "$${PRUNE_FAILED}" -eq 0 ] || exit 1
+              env:
+                - name: FILEN_EMAIL
+                  valueFrom:
+                    secretKeyRef:
+                      name: workspace-secrets
+                      key: FILEN_EMAIL
+                      optional: true
+                - name: FILEN_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: workspace-secrets
+                      key: FILEN_PASSWORD
+                      optional: true
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backups
+                  readOnly: true
+                - name: staging
+                  mountPath: /staging
+                  readOnly: true
+              resources:
+                requests:
+                  memory: 256Mi
+                  cpu: "100m"
+                limits:
+                  memory: 512Mi
+                  cpu: "500m"
+          volumes:
+            - name: backup-storage
+              persistentVolumeClaim:
+                claimName: backup-pvc
+            - name: staging
+              emptyDir: {}

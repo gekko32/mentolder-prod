@@ -1,0 +1,87 @@
+name: Build images
+# Baut die eigenen mentolder-Images aus den Quellen in diesem Repo nach ghcr.io/gekko32
+# (ersetzt den frueheren Mirror aus ghcr.io/paddione). Tags: latest und sha-<commit>.
+# render.yml loest die Digests von :latest auf und pinnt sie im Artefakt.
+# Pull Requests bauen nur (kein Push).
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - components/mentolder-web/**
+      - components/studio-server/**
+      - docker/einvoice-sidecar/**
+      - k3d/talk-transcriber/**
+      - .github/workflows/build-images.yml
+  pull_request:
+    paths:
+      - components/mentolder-web/**
+      - components/studio-server/**
+      - docker/einvoice-sidecar/**
+      - k3d/talk-transcriber/**
+      - .github/workflows/build-images.yml
+
+concurrency:
+  group: build-images-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: mentolder-web
+            context: .
+            file: components/mentolder-web/Dockerfile
+          - image: studio-server
+            context: components/studio-server
+            file: components/studio-server/Dockerfile
+          - image: einvoice-sidecar
+            context: docker/einvoice-sidecar
+            file: docker/einvoice-sidecar/Dockerfile
+          - image: talk-transcriber
+            context: k3d/talk-transcriber
+            file: k3d/talk-transcriber/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          # Nur mentolder-web nutzt diese Args (VITE_* werden ins Bundle gebacken), die
+          # uebrigen Images ignorieren sie. Ohne Formspree-Secret faellt das Formular auf mailto zurueck.
+          build-args: |
+            VITE_FORMSPREE_ENDPOINT=${{ secrets.MENTOLDER_WEB_FORMSPREE_ENDPOINT }}
+            VITE_WEBSITE_ORIGIN=https://web.mentolder.de
+          tags: |
+            ghcr.io/gekko32/${{ matrix.image }}:latest
+            ghcr.io/gekko32/${{ matrix.image }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.image }}

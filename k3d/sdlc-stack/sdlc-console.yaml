@@ -1,0 +1,171 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sdlc-console-config
+  labels:
+    app: sdlc-console
+data:
+  BRAND_ID: "mentolder"
+  BRAND: "mentolder"
+  CLUSTER_ENV: "sdlc-local"
+  PINO_LOG_LEVEL: "info"
+  # Muss zum registrierten OIDC-Callback passen: der Seed-Job leitet ihn als
+  # web.<suffix>/api/auth/callback aus POCKET_ID_FRONTEND_URL ab. Mit
+  # sdlc.localhost sendet die Console eine redirect_uri, die Pocket ID nicht
+  # kennt. sdlc.localhost bleibt als zweiter Ingress-Host erreichbar.
+  #
+  # Die drei Werte kommen aus SDLC_CONSOLE_* (Taskfile.sdlc.yml), NICHT aus
+  # POCKET_ID_FRONTEND_URL/POCKET_ID_URL: dieselben Namen steuern im selben
+  # Kustomize-Build den pocket-id-client-seed-Job, der daraus seine
+  # Callback-Hosts ableitet. Ein gemeinsamer Name haette den lokalen Seed-Job
+  # im Prod-Auth-Modus dazu gebracht, Callbacks fuer web.<PROD_DOMAIN> in die
+  # LOKALE Pocket ID zu schreiben.
+  #
+  # Prod-Auth-Modus (SDLC_AUTH=prod): zeigt auf https://auth.<PROD_DOMAIN>.
+  # Grund ist WebAuthn, nicht Bequemlichkeit — ein Passkey ist an die RP-ID
+  # der Pocket-ID-Domain gebunden und gegen auth.localhost nicht verwendbar.
+  # Siehe docs/sdlc-stack/prod-auth.md.
+  SITE_URL: "${SDLC_CONSOLE_SITE_URL}"
+  POCKET_ID_FRONTEND_URL: "${SDLC_CONSOLE_POCKET_ID_FRONTEND_URL}"
+  POCKET_ID_URL: "${SDLC_CONSOLE_POCKET_ID_URL}"
+  POCKET_ID_CLIENT_ID: "${SDLC_CONSOLE_POCKET_ID_CLIENT_ID}"
+  POCKET_ID_FALLBACK_FRONTEND_URL: "${POCKET_ID_FALLBACK_FRONTEND_URL}"
+  POCKET_ID_FALLBACK_URL: "${POCKET_ID_FALLBACK_URL}"
+  PORTAL_ADMIN_USERNAME: "gekko,paddione,quamain,test-admin,tina-merlin@web.de"
+  LLM_ENABLED: "true"
+  LLM_RERANK_ENABLED: "true"
+  LLM_EMBED_URL: "http://llm-gateway-embed:8081"
+  LLM_RERANKER_URL: "http://llm-gateway-rerank:8081"
+  LLM_EMBED_MODEL: "bge-m3"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sdlc-console
+  labels:
+    app: sdlc-console
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: sdlc-console
+  template:
+    metadata:
+      labels:
+        app: sdlc-console
+    spec:
+      serviceAccountName: sdlc-console
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "3"
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      containers:
+        - name: sdlc-console
+          image: ghcr.io/paddione/website-sdlc:latest
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          envFrom:
+            - configMapRef:
+                name: sdlc-console-config
+          env:
+            - name: SESSIONS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: sdlc-console-sessions-db
+                  key: SESSIONS_DATABASE_URL
+            - name: WEBSITE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: WEBSITE_DB_PASSWORD
+            - name: POCKET_ID_WEBSITE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: POCKET_ID_WEBSITE_SECRET
+            - name: CRON_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: CRON_SECRET
+            # C3 (T002643): ci_rerun spricht die GitHub REST API an (kein
+            # gh-axi im Container). PAT kommt aus workspace-secrets; der
+            # Dev-Placeholder ist bewusst unbrauchbar, Prod wird per
+            # SealedSecret eingespielt. FLUX_WEBHOOK_URL/TOKEN existieren nur
+            # im fleet-Cluster — im Dev-k3d liefern die flux-Aktionen deshalb
+            # sauber 503 statt zu scheitern.
+            - name: GITHUB_PAT
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: GITHUB_PAT
+            # Legacy-Local-Stack [T016429]: der Host-Proxy entfällt mit dem
+            # WSL-Exit; ohne laufenden Proxy degradiert die Console hier
+            # fail-closed (LLM-Pfade antworten mit Verbindungsfehler statt
+            # Crash — LLM_ENABLED steuert das Flag).
+            - name: LLM_PROXY_URL
+              value: ""
+            - name: LLM_PROXY_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: LLM_PROXY_ADMIN_TOKEN
+          ports:
+            - name: http
+              # Der Astro-Node-Adapter lauscht ohne gesetztes PORT auf 4321 —
+              # so wie k3d/website.yaml es auch deklariert. Hier stand 8080,
+              # ohne dass PORT gesetzt wurde: auf 8080 lauschte nie etwas, die
+              # Readiness-Probe lief dauerhaft in "connection refused" und der
+              # Rollout in seine progress deadline.
+              containerPort: 4321
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 4321
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 4321
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sdlc-console
+  labels:
+    app: sdlc-console
+spec:
+  selector:
+    app: sdlc-console
+  ports:
+    - name: http
+      # Service-Port bleibt 8080 (der Ingress verweist darauf); nur das Ziel im
+      # Container wandert auf den tatsächlichen Astro-Port 4321.
+      port: 8080
+      targetPort: 4321

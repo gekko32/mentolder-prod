@@ -1,0 +1,37 @@
+# Proxy mentolder.de apex → old webspace at 185.30.32.28
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: old-webspace-transport
+  namespace: workspace
+spec:
+  insecureSkipVerify: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: old-webspace
+  namespace: workspace
+  annotations:
+    traefik.ingress.kubernetes.io/service.serversscheme: https
+    traefik.ingress.kubernetes.io/service.serverstransport: workspace-old-webspace-transport@kubernetescrd
+spec:
+  ports:
+    - port: 443
+      targetPort: 443
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: old-webspace
+  namespace: workspace
+  labels:
+    kubernetes.io/service-name: old-webspace
+addressType: IPv4
+endpoints:
+  - addresses:
+      - 185.30.32.28
+    conditions:
+      ready: true
+ports:
+  - port: 443

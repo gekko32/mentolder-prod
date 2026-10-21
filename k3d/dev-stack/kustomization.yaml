@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: workspace-dev
+resources:
+  # SDLC-Console (Fleet-Heimat, T016429) — RBAC/Manifeste/Platzhalter-Secret
+  - sdlc-console-rbac.yaml
+  - sdlc-console-secrets.yaml
+  - sdlc-console.yaml
+  - namespace.yaml
+  - shared-db-dev.yaml
+  - website-dev.yaml
+  - brett-dev.yaml
+  - sish.yaml
+  - traefik-wildcard-ingress.yaml
+  - shared-db-dev-lb.yaml
+  - oauth2-proxy-dev.yaml
+  - oauth2-proxy-brainstorm.yaml
+  - oauth2-proxy-sessions.yaml
+  - dev-ingress.yaml
+  - internal-mcp-ingress.yaml
+patches:
+  - path: dev-node-binding.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+  - path: dev-node-binding.yaml
+    target:
+      group: apps
+      version: v1
+      kind: StatefulSet
+  - path: dev-node-binding.yaml
+    target:
+      group: batch
+      version: v1
+      kind: Job
+

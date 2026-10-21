@@ -1,12 +1,13 @@
 name: Render mentolder artifact
-# Rendert nur die mentolder-Komponenten auf Basis von Paddione/Bachelorprojekt (UPSTREAM_REF),
+# Rendert alle mentolder-Komponenten (platform, coturn, office, rustdesk, mentolder,
+# website-mentolder) aus dem eigenen Baum (Basen vendored, siehe VENDORED_FROM) und
 # pusht ein signiertes OCI-Artefakt nach ghcr.io/gekko32/mentolder-manifests.
 on:
   workflow_dispatch:
   push:
     branches: [main]
-  # Zieht neue Website- und Brett-Images nach: rendert nur, wenn ghcr.io/gekko32/website:latest
-  # oder gekko32/brett:latest eine Digest-Kombination hat, zu der es noch kein Artefakt-Tag img-<hash> gibt.
+  # Zieht neue eigene Images nach: rendert nur, wenn die :latest-Digests aller eigenen Images
+  # (siehe images.env) eine Kombination ergeben, zu der es noch kein Artefakt-Tag img-<hash> gibt.
   schedule:
     - cron: '*/20 * * * *'
 
@@ -31,25 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          path: overlay
           fetch-tags: false
-
-      - name: Check out upstream at pinned revision
-        run: |
-          set -euo pipefail
-          ref="$(tr -d '[:space:]' < overlay/UPSTREAM_REF)"
-          git clone --quiet https://github.com/Paddione/Bachelorprojekt.git upstream
-          git -C upstream checkout --quiet "$ref"
-
-      - name: Apply overlay on upstream
-        run: |
-          set -euo pipefail
-          for p in prod-mentolder prod-fleet/mentolder prod-fleet/website-mentolder \
-                   environments/mentolder.yaml environments/fleet-mentolder.yaml; do
-            mkdir -p "upstream/$(dirname "$p")"
-            rm -rf "upstream/$p"
-            cp -r "overlay/$p" "upstream/$p"
-          done
 
       - name: Install kustomize, flux CLI, crane, cosign
         run: |
@@ -79,22 +62,32 @@ jobs:
         run: |
           set -euo pipefail
           # shellcheck disable=SC1091
-          source overlay/images.env
-          # Leer = aktuelles :latest. Ein gesetzter Wert in images.env pinnt bewusst.
-          if [[ -z "${WEBSITE_IMAGE_DIGEST:-}" ]]; then
-            WEBSITE_IMAGE_DIGEST="$(crane digest ghcr.io/gekko32/website:latest)" \
-              || { echo "gekko32/website nicht lesbar: WEBSITE_IMAGE_DIGEST in images.env setzen." >&2; exit 1; }
-          fi
-          if [[ -z "${BRETT_IMAGE_DIGEST:-}" ]]; then
-            BRETT_IMAGE_DIGEST="$(crane digest ghcr.io/gekko32/brett:latest)" \
-              || { echo "gekko32/brett nicht lesbar: BRETT_IMAGE_DIGEST in images.env setzen." >&2; exit 1; }
-          fi
-          echo "WEBSITE_IMAGE_DIGEST=$WEBSITE_IMAGE_DIGEST" >> "$GITHUB_ENV"
-          echo "BRETT_IMAGE_DIGEST=$BRETT_IMAGE_DIGEST" >> "$GITHUB_ENV"
-          # Ein Tag je Kombination aus Website- und Brett-Digest.
-          tag="img-$(printf '%s%s' "$WEBSITE_IMAGE_DIGEST" "$BRETT_IMAGE_DIGEST" | sha256sum | cut -c1-16)"
+          source images.env
+          # Je Image: gesetzter Pin aus images.env, sonst Digest von ghcr.io/gekko32/<image>:latest.
+          resolve() {
+            local var="$1" image="$2" val="${!1:-}"
+            if [[ -z "$val" ]]; then
+              val="$(crane digest "ghcr.io/gekko32/${image}:latest")" \
+                || { echo "ghcr.io/gekko32/${image} nicht lesbar: ${var} in images.env setzen." >&2; exit 1; }
+            fi
+            [[ "$val" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "${var} ungueltig: ${val}" >&2; exit 1; }
+            printf -v "$var" '%s' "$val"
+            echo "${var}=${val}" >> "$GITHUB_ENV"
+            all="${all}${val}"
+          }
+          all=""
+          resolve WEBSITE_IMAGE_DIGEST website
+          resolve BRETT_IMAGE_DIGEST brett
+          resolve STUDIO_IMAGE_DIGEST studio-server
+          resolve COLLABORA_CODE_IMAGE_DIGEST collabora-code
+          resolve DOWNLOADS_CONTENT_IMAGE_DIGEST downloads-content
+          resolve EINVOICE_SIDECAR_IMAGE_DIGEST einvoice-sidecar
+          resolve MENTOLDER_WEB_IMAGE_DIGEST mentolder-web
+          resolve TALK_TRANSCRIBER_IMAGE_DIGEST talk-transcriber
+          # Ein Tag je Kombination aller Image-Digests.
+          tag="img-$(printf '%s' "$all" | sha256sum | cut -c1-16)"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          # Geplanter Lauf: nichts tun, wenn fuer diesen Website-Digest schon ein Artefakt existiert.
+          # Geplanter Lauf: nichts tun, wenn fuer diese Kombination schon ein Artefakt existiert.
           skip=false
           if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]] \
              && crane ls "${ARTIFACT}" 2>/dev/null | grep -qx "$tag"; then
@@ -103,28 +96,83 @@ jobs:
           fi
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
 
+      - name: Pin own images
+        if: steps.digests.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          # Nur im CI-Arbeitsbaum, nicht committet. STUDIO_IMAGE_DIGEST geht ueber die
+          # Umgebung (envsubst), website/brett ebenso.
+          (cd prod-fleet/mentolder && kustomize edit set image \
+            "ghcr.io/gekko32/downloads-content@${DOWNLOADS_CONTENT_IMAGE_DIGEST}" \
+            "ghcr.io/gekko32/einvoice-sidecar@${EINVOICE_SIDECAR_IMAGE_DIGEST}" \
+            "ghcr.io/gekko32/mentolder-web@${MENTOLDER_WEB_IMAGE_DIGEST}" \
+            "ghcr.io/gekko32/talk-transcriber@${TALK_TRANSCRIBER_IMAGE_DIGEST}")
+          (cd prod-fleet/office && kustomize edit set image \
+            "ghcr.io/gekko32/collabora-code@${COLLABORA_CODE_IMAGE_DIGEST}")
+
       - name: Render mentolder components
         if: steps.digests.outputs.skip != 'true'
-        working-directory: upstream
         env:
           CI: "true"
         run: |
           set -euo pipefail
           bash scripts/ci-dummy-secrets.sh
-          bash scripts/flux-render-artifact.sh --out ../out \
-            --only mentolder,website-mentolder
+          bash scripts/flux-render-artifact.sh --out ./out
+
+      - name: Check image references
+        if: steps.digests.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          # Keine Images aus fremden Registries des Upstream-Projekts, eigene nur digest-gepinnt.
+          if grep -rn 'ghcr.io/paddione' out/; then
+            echo "Artefakt referenziert ghcr.io/paddione." >&2; exit 1
+          fi
+          # fuehrungsfunk laeuft bewusst auf :latest (eigenes Repo, eigener Rollout).
+          unpinned="$(grep -rhoE 'ghcr\.io/gekko32/[A-Za-z0-9._/-]+[^"[:space:]]*' out/ \
+            | grep -v '@sha256:' | grep -v '^ghcr\.io/gekko32/fuehrungsfunk:' | sort -u || true)"
+          if [[ -n "$unpinned" ]]; then
+            echo "Nicht digest-gepinnte eigene Images:" >&2; echo "$unpinned" >&2; exit 1
+          fi
 
       - name: Push and sign OCI artifact
         if: steps.digests.outputs.skip != 'true'
         id: push
         run: |
           set -euo pipefail
-          OUT="$(flux push artifact "oci://${ARTIFACT}:latest" \
+          # Nur main schreibt :latest (das liest Flux). Testlaeufe auf Branches
+          # pushen unter branch-<name> und lassen das laufende Artefakt unberuehrt.
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            base="latest"
+          else
+            base="branch-$(printf '%s' "${GITHUB_REF_NAME}" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-100)"
+          fi
+          OUT="$(flux push artifact "oci://${ARTIFACT}:${base}" \
             --path=./out \
             --source="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --revision="${GITHUB_REF_NAME}@sha1:${GITHUB_SHA}" \
             --output json)"
           digest="$(printf '%s' "$OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
-          flux tag artifact "oci://${ARTIFACT}:latest" --tag "sha-${GITHUB_SHA}"
-          flux tag artifact "oci://${ARTIFACT}:latest" --tag "${{ steps.digests.outputs.tag }}"
+          flux tag artifact "oci://${ARTIFACT}:${base}" --tag "sha-${GITHUB_SHA}"
+          if [[ "$base" == "latest" ]]; then
+            flux tag artifact "oci://${ARTIFACT}:latest" --tag "${{ steps.digests.outputs.tag }}"
+          fi
           cosign sign --yes "${ARTIFACT}@${digest}"
+
+      - name: Ping Flux receiver (immediate reconcile)
+        # Nur fuer main (nur dieses Artefakt liest Flux). Ohne Repo-Secret
+        # FLUX_WEBHOOK_URL greift Flux nach seinem Intervall.
+        if: success() && steps.digests.outputs.skip != 'true' && github.ref == 'refs/heads/main'
+        env:
+          FLUX_WEBHOOK_URL: ${{ secrets.FLUX_WEBHOOK_URL }}
+          FLUX_WEBHOOK_TOKEN: ${{ secrets.FLUX_WEBHOOK_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${FLUX_WEBHOOK_URL:-}" ]]; then
+            echo "FLUX_WEBHOOK_URL nicht gesetzt, Flux greift nach seinem Intervall."
+            exit 0
+          fi
+          payload='{}'
+          sig="sha256=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$FLUX_WEBHOOK_TOKEN" -hex | awk '{print $2}')"
+          curl --fail --show-error --silent -X POST "$FLUX_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' -H "X-Signature: $sig" --data "$payload" \
+            || { echo "Receiver-Ping fehlgeschlagen (nicht fatal)."; exit 0; }

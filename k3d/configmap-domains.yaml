@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: domain-config
+data:
+  # Pocket ID is the auth provider — domain is auth.* (was Keycloak's slot)
+  POCKET_ID_DOMAIN: "auth.localhost"
+  NC_DOMAIN: "files.localhost"
+  MEET_DOMAIN: "files.localhost/index.php/apps/spreed/"
+  SIGNALING_DOMAIN: "signaling.localhost"
+  COLLABORA_DOMAIN: "office.localhost"
+  WHITEBOARD_DOMAIN: "board.localhost"
+  VAULT_DOMAIN: "vault.localhost"
+  MAIL_DOMAIN: "mail.localhost"
+  DOWNLOADS_DOMAIN: "downloads.localhost"
+  RECOVER_DOMAIN: "recover.localhost"
+  WEB_DOMAIN: "web.localhost"
+  SESSIONS_DOMAIN: "sessions.localhost"
+  REMOTE_DOMAIN: "remote.localhost"
+  TRAEFIK_DOMAIN: "traefik.localhost"
+  # Env-registry values (dev defaults — prod overlay overrides these)
+  PROD_DOMAIN: "localhost"
+  WEBSITE_IMAGE: "workspace-website"
+  INFRA_NAMESPACE: "workspace-infra"
+  TLS_SECRET_NAME: "workspace-wildcard-tls"
+  TURN_PUBLIC_IP: "127.0.0.1"
+  TURN_NODE: "k3d-dev-server-0"
+  ADMIN_USERNAME: "admin"
+  ADMIN_EMAIL: "admin@localhost"
+  # Internal endpoints for wg-mesh consumers [T016430] — prod overrides via
+  # environments/fleet-*.yaml (bge-embed.${PROD_DOMAIN} / bge-rerank.${PROD_DOMAIN})
+  BGE_EMBED_HOST: "embed.localhost"
+  BGE_RERANK_HOST: "rerank.localhost"
+  BRETT_DOMAIN: "brett.localhost"
+  BRAINSTORM_DOMAIN: "brainstorm.localhost"
+  AI_DOMAIN: "ai.localhost"
+  OTEL_DOMAIN: "otel.localhost"
+  MEDIAVIEWER_HOST: "mediaviewer.localhost"
+  TERMINAL_HOST: "terminal.localhost"
+  VIDEOVAULT_DOMAIN: "videovault.localhost"
+  STUDIO_DOMAIN: "studio.localhost"
+  STUDIO_IMAGE: "studio-server:latest"
+  # Interne wg-mesh-Endpunkte für das bge-Paar (T016422) — bewusst OHNE
+  # Brand-Domain; Operator-DNS trägt die Hosts, Konsum über k3d/dev-stack/
+  # internal-mcp-ingress.yaml.
+  DEV_BGE_EMBED_HOST: "bge-embed.internal"
+  DEV_BGE_RERANK_HOST: "bge-rerank.internal"

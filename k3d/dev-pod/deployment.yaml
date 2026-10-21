@@ -1,0 +1,246 @@
+# k3d/dev-pod/deployment.yaml — MCP-Server-Bundle [T900107]
+#
+# Loest den claude-code-mcp-monolith (Namespace default) ab, der von keiner
+# Flux-Kustomization erfasst war und nur ueber ein manuelles `kubectl apply -k`
+# live ging.
+#
+# Vier Container:
+#   mcp-node        — ticket-mcp, task-runner,
+#                     codebase-memory, github (MCP_NODE_SERVICES)
+#   mcp-kubernetes  — das Go-Binary von quay.io, unveraendert uebernommen
+#   repo-sync       — einziger Schreiber des Checkout-Volumes
+#   dev-shell       — sshd (uid 1000, nur 127.0.0.1:22) + Dev-Toolchain [T900108]
+#
+# Requests am gemessenen Verbrauch, nicht an den Altwerten: der Monolith
+# deklarierte 960Mi fuer vier Container und verbrauchte real 341Mi
+#   kubectl --context fleet -n default top pod --containers -l app=claude-code-mcp-monolith
+#   # 2026-09-10: github 61Mi | kubernetes 45Mi | playwright 144Mi | postgres 91Mi
+# Ohne playwright (bleibt lokaler stdio-Server, 4-GiB-Limit) sind das 197Mi fuer
+# drei Server; mcp-node traegt vier weitere Node-Prozesse dazu.
+#
+# KEIN Ingress, keine IngressRoute, kein LoadBalancer — siehe service.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dev-pod
+  labels:
+    app: dev-pod
+spec:
+  replicas: 1
+  # Recreate statt RollingUpdate: das Checkout-PVC ist ReadWriteOnce, zwei
+  # gleichzeitige Pods koennten es nicht beide mounten und der Rollout bliebe
+  # haengen.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dev-pod
+  template:
+    metadata:
+      labels:
+        app: dev-pod
+    spec:
+      serviceAccountName: dev-pod
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      # Dev-Node-Bindung wie der uebrige workspace-dev-Stack
+      # (k3d/dev-stack/dev-node-binding.yaml). Hier inline, weil dieses Overlay
+      # nicht durch prod-fleet/dev laeuft und den dortigen Patch nicht erbt.
+      tolerations:
+        - key: role
+          operator: Equal
+          value: dev
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: role
+                    operator: In
+                    values: [dev]
+      # Pod-level runAsNonRoot ist moeglich, weil KEIN Container mehr root
+      # braucht: der Monolith installierte Pakete zur Laufzeit und trug dafuer
+      # vier annotierte Ausnahmen, hier liegt alles im Image.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        # [T900108] Ohne OnRootMismatch chownt der Kubelet vor jedem Start das
+        # 20Gi-Home rekursiv — bei Recreate verlaengert das das Ausfallfenster
+        # aller MCP-Server im Pod. So nur, wenn das Volume-Root nicht passt.
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+        # [T900108] sshd laeuft non-root im dev-shell-Container und bindet :22.
+        # Explizit statt auf den containerd-Default zu vertrauen; der sysctl ist
+        # "safe" und gilt nur fuer den Netz-Namespace dieses Pods.
+        sysctls:
+          - name: net.ipv4.ip_unprivileged_port_start
+            value: "0"
+      containers:
+        # ── mcp-node ────────────────────────────────────────────────
+        - name: mcp-node
+          image: ghcr.io/gekko32/mcp-node:latest
+          imagePullPolicy: Always
+          env:
+            # [T900191] llm-proxy und postgres laufen in devmesh
+            # (dev-local/components/llm-services). Ohne diese Auswahl startete
+            # der Supervisor beide erneut.
+            - name: MCP_NODE_SERVICES
+              value: "github,ticket-mcp,task-runner,codebase-memory"
+            - name: WEBSITE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shared-db-dev-secrets
+                  key: DEV_WEBSITE_DB_PASSWORD
+                  optional: true
+            # DB-Direktzugriff fuer In-Pod-Skripte (im Pod fehlt kubectl).
+            - name: WORKSPACE_PG_URL
+              value: "postgresql://website:$(WEBSITE_DB_PASSWORD)@shared-db-dev.workspace-dev.svc.cluster.local:5432/website"
+            - name: PGOPTIONS
+              value: "-c statement_timeout=120000ms"
+            - name: GITHUB_PERSONAL_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: shared-db-dev-secrets
+                  key: GITHUB_PAT
+                  optional: true
+            - name: DEV_POD_REPO
+              value: /workspace/repo
+          ports:
+            - { containerPort: 3002, name: github, protocol: TCP }
+            - { containerPort: 3003, name: ticket, protocol: TCP }
+            - { containerPort: 3005, name: task-runner, protocol: TCP }
+            - { containerPort: 3006, name: codebase-mem, protocol: TCP }
+          readinessProbe:
+            # [T900191] ticket-mcp (3003) startet ohne Secret; llm-proxy (18235)
+            # laeuft nicht mehr in diesem Pod.
+            tcpSocket:
+              port: 3003
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 320Mi
+            # Limit bewusst deutlich unter 2Gi: das 2Gi-Limit des Monolithen
+            # versteckte den mcp-server-postgres-Child-Leak (T002321) rund zehn
+            # Stunden lang, bevor der OOMKill kam.
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: repo
+              mountPath: /workspace/repo
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+        # ── mcp-kubernetes ──────────────────────────────────────────
+        - name: mcp-kubernetes
+          image: quay.io/containers/kubernetes_mcp_server@sha256:ef1ede0fd73ce975de1850b7f19090d0850c4ce3e7d21d795f21de3ee8d1452c
+          imagePullPolicy: IfNotPresent
+          args: ["--port", "8080", "--stateless", "--cluster-provider", "in-cluster"]
+          ports:
+            - { containerPort: 8080, name: kubernetes, protocol: TCP }
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+        # ── repo-sync ───────────────────────────────────────────────
+        - name: repo-sync
+          image: ghcr.io/paddione/repo-sync:latest
+          imagePullPolicy: Always
+          env:
+            - name: REPO_DIR
+              value: /workspace/repo
+            - name: REPO_URL
+              value: "https://github.com/paddione/Bachelorprojekt.git"
+            - name: REPO_REF
+              value: main
+            - name: SYNC_INTERVAL_SECONDS
+              value: "300"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            # Der einzige schreibende Mount des Checkouts im ganzen Pod.
+            - name: repo
+              mountPath: /workspace/repo
+        # ── dev-shell ───────────────────────────────────────────────
+        # SSH-Zugang ausschliesslich ueber kubectl exec + nc 127.0.0.1 22 [T900108].
+        # Kein containerPort: sshd bindet nur Loopback.
+        - name: dev-shell
+          image: ghcr.io/paddione/dev-shell:latest
+          imagePullPolicy: Always
+          # Bewusst KEINE readinessProbe: ein per Probe NotReady gemeldeter Container
+          # macht den ganzen Pod NotReady und nimmt svc/dev-pod die Endpunkte
+          # (llm-proxy, MCP-Ports). dev-shell ist optional; haengt sshd, startet die
+          # livenessProbe nur diesen Container neu.
+          # Restrisiko: Pod-Ready ist das UND ueber alle Container. Steckt dev-shell
+          # in CrashLoopBackOff/ImagePullBackOff oder startet gerade neu, ist der Pod
+          # trotzdem NotReady (dev-pod-ssh-Design, Verfuegbarkeit).
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "nc -z -w 2 127.0.0.1 22"]
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 3Gi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: home
+              mountPath: /home/dev
+            - name: authorized-keys
+              mountPath: /etc/dev-shell/keys
+              readOnly: true
+            # Read-only: repo-sync bleibt einziger Schreiber, gearbeitet wird im
+            # Clone unter /home/dev.
+            - name: repo
+              mountPath: /workspace/repo
+              readOnly: true
+      volumes:
+        - name: repo
+          persistentVolumeClaim:
+            claimName: dev-pod-repo
+        - name: tmp
+          emptyDir: {}
+        - name: home
+          persistentVolumeClaim:
+            claimName: dev-pod-home
+        - name: authorized-keys
+          configMap:
+            name: dev-pod-authorized-keys
+            optional: true

@@ -49,13 +49,11 @@ env_vars:
   NEXTCLOUD_EXTERNAL_URL: "https://files.mentolder.de"
   AUTH_EXTERNAL_URL: "https://auth.mentolder.de"
   VAULT_EXTERNAL_URL: "https://vault.mentolder.de"
-  BRAIN_EXTERNAL_URL: "https://brain.mentolder.de"
+  BRAIN_EXTERNAL_URL: ""
   WHITEBOARD_EXTERNAL_URL: "https://files.mentolder.de/apps/files"
   TRAEFIK_EXTERNAL_URL: "https://traefik.mentolder.de"
   MAIL_EXTERNAL_URL: "https://mail.mentolder.de"
   BRETT_DOMAIN: brett.mentolder.de
-  # Session-Subdomain fuer session-<slug>.<SESSIONS_DOMAIN> [T016251]
-  SESSIONS_DOMAIN: sessions.mentolder.de
   MEDIAVIEWER_HOST: mediaviewer.mentolder.de
   VIDEOVAULT_DOMAIN: videovault.mentolder.de
   OTEL_DOMAIN: otel.mentolder.de
@@ -83,8 +81,8 @@ env_vars:
   LLM_EMBED_MODEL: "bge-m3"
 
   STUDIO_DOMAIN: studio.mentolder.de
-  STUDIO_IMAGE: ghcr.io/paddione/studio-server
-  STUDIO_IMAGE_DIGEST: sha256:3fb082d01ee1679ccbe75831e7badc66f51fae8995afa5283da03eb4d349e7f3
+  STUDIO_IMAGE: ghcr.io/gekko32/studio-server
+  STUDIO_IMAGE_DIGEST: sha256:3333333333333333333333333333333333333333333333333333333333333333
   # ── Dev stack (dev.mentolder.de) ─────────────────────────────────────
   DEV_DOMAIN: "dev.mentolder.de"
   DEV_NODE: "dev-vm"
@@ -106,11 +104,11 @@ website_namespace: website
 secrets_ref: sealed-secrets/mentolder.yaml
 
 setup_vars:
-  KC_USER1_USERNAME: paddione
-  KC_USER1_EMAIL: patrick@korczewski.de
+  KC_USER1_USERNAME: gekko
+  KC_USER1_EMAIL: quamain@web.de
   KC_USER1_PASSWORD: SEALED
-  KC_USER2_USERNAME: gekko
-  KC_USER2_EMAIL: quamain@web.de
+  KC_USER2_USERNAME: paddione
+  KC_USER2_EMAIL: patrick@korczewski.de
   KC_USER2_PASSWORD: SEALED
   # wg-mesh Hetzner CP keys — private keys sealed in .secrets/mentolder.yaml
   WG_MESH_GEKKO2_PRIVATE_KEY: SEALED

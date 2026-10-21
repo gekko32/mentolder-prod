@@ -1,0 +1,76 @@
+# Single-binary Loki for unified log aggregation across both brands.
+# Dev baseline: local-path storage, 5Gi PVC. Prod: longhorn via overlay patch.
+# No MinIO/S3 — plain filesystem TSDB, 14d retention.
+#
+# NOTE (T007035, audit 2026-08-15): the committed loki-rendered.yaml is
+# INTENTIONALLY out of sync with `helm template` output — it pins
+# grafana/loki:3.7.4@sha256:87f0... and quay.io/kiwigrid/k8s-sidecar:2.8.1,
+# while a fresh `task loki:render` would fall back to the chart defaults
+# (3.6.7 / docker.io:2.5.0). Do NOT regenerate the rendered file blindly;
+# patch it minimally instead (see the cpu: 1000m fix below).
+
+deploymentMode: SingleBinary
+
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: true
+    storageClass: local-path
+    size: 5Gi
+    accessModes:
+      - ReadWriteOnce
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      # String quantity, not bare int — YAML number fails strict schema validation
+      # (flux-schema: "got number, want string"). 1000m == 1 CPU core.
+      cpu: 1000m
+      memory: 1Gi
+
+loki:
+  auth_enabled: false
+  commonConfig:
+    path_prefix: /var/loki
+    replication_factor: 1
+  storage:
+    type: filesystem
+    filesystem:
+      chunks_directory: /var/loki/chunks
+      rules_directory: /var/loki/rules
+  schemaConfig:
+    configs:
+      - from: "2026-01-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+  limits_config:
+    retention_period: 336h
+  compactor:
+    retention_enabled: true
+    delete_request_store: filesystem
+    compaction_interval: 10m
+
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+gateway:
+  enabled: false
+minio:
+  enabled: false
+test:
+  enabled: false
+lokiCanary:
+  enabled: false
+
+backend:
+  replicas: 0
+read:
+  replicas: 0
+write:
+  replicas: 0

@@ -1,0 +1,84 @@
+# NUR VIA TASK DEPLOYEN [T901777]: Datei enthaelt Escapes/Platzhalter fuer den Task/Flux-Render-Pfad. Direktes 'kubectl apply -f' hinterlaesst Literale (siehe k3d/README.md).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scheduled-publish
+  namespace: workspace
+  labels:
+    app: cronjobs
+spec:
+  schedule: "*/5 * * * *"
+  timeZone: "Europe/Berlin"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      # Ohne ttlSecondsAfterFinished raeumt der Job-Controller die Pods
+      # beendeter Jobs nie ab - bei einem Lauf alle 5 Minuten stapelten sich
+      # die Fehl-Pods bis zu 11 Tage lang. [T900035]
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: publish
+              image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                runAsUser: 65534
+                capabilities:
+                  drop: ["ALL"]
+              command:
+                - sh
+                - -c
+                - |
+                  # Zwei Defekte lagen hier uebereinander und ergaben zusammen den
+                  # Befund "Job scheitert dauerhaft, Log ist leer". [T900035]
+                  #
+                  # 1. Der Ziel-Host war fest auf "website.website-staging"
+                  #    verdrahtet. In PROD (workspace) und in korczewski rief der
+                  #    Job damit die STAGING-Website auf und endete in
+                  #    BackoffLimitExceeded. Der Namespace kommt jetzt beim Render
+                  #    aus der Env-Registry, wie bei jedem anderen CronJob.
+                  # 2. "curl -sf" ist silent+fail: der Container starb ohne jede
+                  #    Ausgabe, das Pod-Log war leer und die Diagnose blind. Jetzt
+                  #    wird der HTTP-Code geloggt und der Body bei Fehlschlag nach
+                  #    stderr geschrieben.
+                  #
+                  # Das Doppel-Dollar am CRON_SECRET bleibt stehen: der Renderer
+                  # nimmt so markierte Variablen aus der envsubst-Liste heraus und
+                  # unwrapped sie danach wieder, sodass erst die Shell im Container
+                  # sie aufloest (T002306/T012907, siehe
+                  # tests/py/spec/native_ported/spec/flux-render-security/test_runtime_var_unwrapping.py).
+                  code=$(curl -s -S -X GET \
+                    -o /tmp/publish-response \
+                    -w '%{http_code}' \
+                    -H "Authorization: Bearer $${CRON_SECRET}" \
+                    "http://website.${WEBSITE_NAMESPACE}.svc.cluster.local/api/cron/scheduled-publish")
+                  # T901780: $$code -- single-$ wurde von envsubst beim
+                  # Rendern verschluckt (toter Check, leeres Echo).
+                  echo "scheduled-publish: HTTP $$code"
+                  if [ "$$code" -lt 200 ] || [ "$$code" -ge 300 ]; then
+                    echo "scheduled-publish: response body follows" >&2
+                    head -c 2000 /tmp/publish-response >&2
+                    exit 1
+                  fi
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 64Mi
+              env:
+                - name: CRON_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: workspace-secrets
+                      key: CRON_SECRET

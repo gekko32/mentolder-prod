@@ -1,0 +1,1829 @@
+# environments/schema.yaml
+# Single source of truth for all environment variables and secrets.
+# Every deployment target must satisfy this schema.
+version: 1
+
+# Deterministic derivation (derived-secrets-tooling, T901698): global HKDF
+# version for secrets derived via scripts/secret-derive.py. Per-key override
+# via `derive_version`, opt-out via `derived: false` (default follows
+# `generate`). Rotation = bump the version, both ends re-derive.
+derivation:
+  version: 1
+
+# Ordered grouping rules for the grouped Bitwarden export
+# (scripts/generate-bitwarden-export.py --format grouped) and the must-store
+# extra list. First matching rule wins; unmatched keys fall into "misc".
+# Families mirror get_secret_metadata in the exporter.
+groups:
+  - name: db
+    suffix: [_DB_PASSWORD]
+  - name: oidc
+    prefix: [POCKET_ID_]
+    suffix: [_OIDC_SECRET]
+  - name: api
+    suffix: [_API_KEY, _API_TOKEN, _TOKEN, _PAT, _SECRET_KEY]
+    contains: [API_KEY]
+  - name: mail
+    prefix: [SMTP_, MAILBOX_]
+  - name: network
+    prefix: [WG_MESH_]
+    suffix: [_COOKIE_SECRET, _JWT_SECRET]
+    exact: [SIGNALING_SECRET, TURN_SECRET, RECORDING_SECRET, TRANSCRIBER_SECRET, TRANSCRIBER_BOT_PASSWORD]
+  - name: ssh
+    suffix: [_SSH_PRIVATE_KEY, _SSH_PUBLIC_KEY, _ED25519, _ED25519_PUB, _AUTHORIZED_KEYS]
+  - name: misc
+
+env_vars:
+  - name: PROD_DOMAIN
+    required: true
+    default_dev: "localhost"
+    validate: "^[a-z0-9.-]+$"
+
+  - name: SESSIONS_DOMAIN
+    required: false
+    default_dev: ""
+    validate: "^[a-z0-9.-]*$"
+    description: "Subdomain base for session dynamic instances (e.g. sessions.mentolder.de)"
+
+  - name: CLUSTER_ENV
+    required: true
+    default_dev: "dev"
+    validate: "^[a-z0-9-]+$"
+
+  - name: BRAND_NAME
+    required: true
+    default_dev: "KORE"
+
+  - name: BRAND_ID
+    required: true
+    default_dev: "korczewski"
+
+  - name: CONTACT_EMAIL
+    required: true
+    default_dev: "dev@localhost"
+    validate: "^.+@.+$"
+
+  # Empfänger der Backup-Fail-Warnmails (Alertmanager-Route "backup-email" in
+  # k3d/monitoring/alertmanager-config.yaml). Bewusst getrennt von CONTACT_EMAIL:
+  # die Brand-Adresse ist die öffentliche Kontaktadresse, Backup-Warnungen
+  # gehören zum Betreiber.
+  - name: BACKUP_ALERT_EMAIL
+    required: true
+    default_dev: "dev@localhost"
+    validate: "^.+@.+$"
+
+  - name: CONTACT_PHONE
+    required: false
+    default_dev: "+49 000 000 00 000"
+
+  # Kill-Switch für den öffentlichen Coaching-Guide-Demo-Proxy /api/demo/coaching-sim
+  # (T001664). Wird zur Laufzeit von der Website gelesen; "false" deaktiviert den
+  # Endpoint (503). Jeder andere Wert / nicht gesetzt = aktiv (Spec-Default).
+  - name: COACHING_SIM_ENABLED
+    required: false
+    default_dev: "true"
+
+  # Runtime-Env-Vars der Website rund um Coaching-Sessions (T001672). Alle optional
+  # mit Code-Fallbacks — hier dokumentiert, damit sie auffindbar/konfigurierbar sind.
+  # COACHING_SESSION_MODEL: Claude-Modell für den Abschlussbericht (complete.ts);
+  #   Fallback DEFAULT_CLAUDE_SESSION_MODEL in lib/claude-session-agent.ts.
+  - name: COACHING_SESSION_MODEL
+    required: false
+    default_dev: ""
+
+  # LLM_GATEWAY_URL: OpenAI-kompatibler Gateway-Endpoint für den Provider 'anthropic'
+  # in lib/openai-compatible-session-agent.ts. Der frühere Fallback auf den
+  # Cluster-DNS des LM-Studio-Gateways ist entfallen — der Dienst wurde
+  # abgeschaltet (T002102, unified llm-proxy).
+  - name: LLM_GATEWAY_URL
+    required: false
+    default_dev: ""
+
+  # SESSION_HUB_REGISTRY: Pfad zur active-sessions.json des Session-Hubs
+  # (api/admin/sessions). SESSION_HUB_REGISTRY_WRITABLE: nur wenn "true", erlauben
+  # POST/DELETE das Registrieren/Deregistrieren (sonst 501 — bewusstes Gating).
+  # SESSIONS_ARCHIVE_DIR: Ablage archivierter Session-Formulare (history/[id]).
+  - name: SESSION_HUB_REGISTRY
+    required: false
+    default_dev: ""
+
+  - name: SESSION_HUB_REGISTRY_WRITABLE
+    required: false
+    default_dev: ""
+
+  - name: SESSIONS_ARCHIVE_DIR
+    required: false
+    default_dev: ""
+
+  - name: CONTACT_CITY
+    required: true
+    default_dev: "DevCity"
+
+  - name: CONTACT_NAME
+    required: true
+    default_dev: "Dev User"
+
+  - name: LEGAL_STREET
+    required: true
+    default_dev: "Musterstrasse 1"
+
+  - name: LEGAL_ZIP
+    required: true
+    default_dev: "00000"
+
+  - name: LEGAL_JOBTITLE
+    required: true
+    default_dev: "Coach, Berater, Trainer"
+
+  - name: LEGAL_UST_ID
+    required: true
+    default_dev: "Nicht vorhanden"
+
+  - name: LEGAL_WEBSITE
+    required: true
+    default_dev: "localhost"
+
+  - name: WEBSITE_IMAGE
+
+  - name: WEBSITE_IMAGE_TAG
+    required: false
+    default_dev: "latest"
+    description: "Docker image tag for the website in dev/k3d; CI resolves to digest for prod."
+
+  - name: WEBSITE_IMAGE_DIGEST
+    required: false
+    default_dev: ""
+    validate: "^(sha256:[a-f0-9]{64})?$"
+    description: "SHA256 digest for the website image in prod overlays (e.g. sha256:1111...)."
+
+  - name: BRETT_IMAGE_DIGEST
+    required: false
+    default_dev: ""
+    validate: "^(sha256:[a-f0-9]{64})?$"
+    description: "SHA256 digest for the workspace-brett image in prod overlays."
+
+  - name: BRETT_IMAGE
+    required: false
+    default_dev: "latest"
+
+  - name: WEBSITE_NAMESPACE
+    required: false
+    default_dev: "website"
+    description: "Kubernetes namespace for the Astro website (separate per env on unified cluster)"
+
+  # PRIMARY_FRONTEND (T001490 Task 9) — selects the apex ${WEBSITE_HOST} backend.
+  # `astro` → k3d/website.yaml (the Astro/SSR service named `website`)
+  # `react` → k3d/mentolder-web.yaml (the Vite/React SPA service named `mentolder-web`)
+  # Both deployments stay live; only the apex Host() route changes backend.
+  # Per-service hosts (react.<brand>, admin.<brand>, …) are unaffected.
+  - name: PRIMARY_FRONTEND
+    required: true
+    default_dev: "astro"
+    validate: "^(astro|react)$"
+    description: "Apex Host() backend selector for ${WEBSITE_HOST}. `astro` → website (SSR), `react` → mentolder-web (SPA)."
+
+  - name: WEBSITE_NODE_AFFINITY
+    required: false
+    default_dev: ""
+    description: "JSON array of node hostnames for website Deployment nodeAffinity (overrides base manifest gekko-hetzner-2/3). Set for envs on non-standard node layouts."
+
+  - name: WORKSPACE_NAMESPACE
+    required: false
+    default_dev: "workspace"
+    description: "Kubernetes namespace for core workspace services (Pocket ID, Nextcloud, etc.)"
+
+  # T901440: zentrale DB-Koordinaten der Website (shared-db-Instanz).
+  # Defaults bilden den bisherigen Stand ab (Host aus WORKSPACE_NAMESPACE,
+  # DB/User website); korczewski setzt website_massage im zentralen Namespace.
+  - name: WEBSITE_DB_NAMESPACE
+    required: false
+    default_dev: "workspace"
+    description: "Namespace of the central shared-db service used by the website (T901440)."
+
+  - name: WEBSITE_DB_NAME
+    required: false
+    default_dev: "website"
+    description: "Database name on the central shared-db used by the website (T901440)."
+
+  - name: WEBSITE_DB_USER
+    required: false
+    default_dev: "website"
+    description: "Database role on the central shared-db used by the website (T901440)."
+
+  - name: EINVOICE_SIDECAR_ENABLED
+    required: false
+    default_dev: "false"
+    description: "Enable Mustangproject sidecar for PDF/A-3 + factur-x.xml embedding"
+
+  - name: EINVOICE_SIDECAR_URL
+    required: false
+    default_dev: "http://einvoice-sidecar.workspace.svc.cluster.local"
+    description: "Cluster URL for the einvoice-sidecar"
+
+  - name: SYSTEMTEST_LOOP_ENABLED
+    required: false
+    default_dev: "false"
+    description: "Master kill-switch for the system-test failure loop — gates the seed button on /admin/fragebogen, the rrweb recorder, and /admin/systemtest/board. Schema bootstrap and cleanup CronJobs run regardless."
+
+  - name: INFRA_NAMESPACE
+    required: true
+    default_dev: "workspace-infra"
+
+  - name: TLS_SECRET_NAME
+    required: true
+    default_dev: "workspace-wildcard-tls"
+
+  - name: SMTP_FROM
+    required: true
+    default_dev: "noreply@localhost"
+
+  # MAIL_FROM_LOCAL and MAIL_FROM_DOMAIN are auto-derived from SMTP_FROM at
+  # deploy time (see workspace:deploy in Taskfile.yml — local part before @ and
+  # domain part after). Declared here so audits flagging "${VAR} used in
+  # manifests but missing from schema" can see them as known-derived.
+  - name: MAIL_FROM_LOCAL
+    required: false
+    default_dev: "noreply"
+    description: "Local-part of SMTP_FROM. Auto-derived at deploy time — do not set manually."
+
+  - name: MAIL_FROM_DOMAIN
+    required: false
+    default_dev: "localhost"
+    description: "Domain-part of SMTP_FROM. Auto-derived at deploy time — do not set manually."
+
+  - name: SMTP_USER
+    required: true
+    default_dev: "noreply@localhost"
+
+  - name: SMTP_HOST
+    required: true
+    default_dev: "mailpit.workspace.svc.cluster.local"
+
+  - name: SMTP_PORT
+    required: true
+    default_dev: "1025"
+
+  - name: SMTP_SECURE
+    required: false
+    default_dev: "false"
+
+  - name: NTFY_BASE_URL
+    required: false
+    default_dev: "http://ntfy.localhost"
+    description: "Public URL of the ntfy push notification server"
+
+  - name: AGENT_PUSH_API
+    required: false
+    default_dev: "http://web.localhost"
+    description: "Base URL of the website settings API for push opt-in checks"
+
+  - name: AGENT_PUSH_LINK_BASE
+    required: false
+    default_dev: "http://web.localhost/admin/tickets"
+    description: "Base URL for generating ticket links in notification messages"
+
+  - name: TURN_PUBLIC_IP
+    required: true
+    default_dev: "127.0.0.1"
+
+  - name: TURN_NODE
+    required: true
+    default_dev: "k3d-dev-server-0"
+
+  - name: TERMINAL_OVERLAY_IP
+    required: true
+    default_dev: "127.0.0.1"
+    validate: "^[0-9.]+$"
+    description: "wg-fleet overlay IP of the terminal-sidekick host (10.20.0.10). Endpoints in terminal-bridge target this."
+
+  - name: TURN_OVERLAY_IP
+    required: true
+    default_dev: "127.0.0.1"
+    validate: "^[0-9.]+$"
+    description: "wg-fleet overlay IP of ${TURN_NODE} (fleet pk-hetzner-4 = 10.20.0.1). Endpoints target for the RustDesk web-client bridge (T001381)."
+
+  - name: NEXTCLOUD_EXTERNAL_URL
+    required: false
+    default_dev: "http://files.localhost"
+
+  - name: NEXTCLOUD_DB_HOST
+    required: true
+    default_dev: "nextcloud-db.workspace.svc.cluster.local"
+    description: "Cluster-internal FQDN of the Nextcloud MariaDB. Overridden per-brand in environments/{korczewski,fleet-korczewski}.yaml when the namespace differs from `workspace`."
+
+  - name: AUTH_EXTERNAL_URL
+    required: false
+    default_dev: "http://auth.localhost"
+
+  - name: VAULT_EXTERNAL_URL
+    required: false
+    default_dev: "http://vault.localhost"
+
+  - name: BRAIN_EXTERNAL_URL
+    required: false
+    default_dev: "http://brain.localhost"
+
+  - name: WHITEBOARD_EXTERNAL_URL
+    required: false
+    default_dev: "http://board.localhost"
+
+  - name: TRAEFIK_EXTERNAL_URL
+    required: false
+    default_dev: "http://traefik.localhost"
+
+  - name: MAIL_EXTERNAL_URL
+    required: false
+    default_dev: "http://mail.localhost"
+
+  - name: EMAIL_NOTIFICATIONS_ENABLED
+    required: false
+    default_dev: "false"
+    validate: "^(true|false)$"
+    description: "Global toggle for outgoing email notifications (T900063)."
+
+  - name: BGE_EMBED_HOST
+    required: false
+    default_dev: "embed.localhost"
+    validate: "^[a-z0-9.-]+$"
+    description: "Internal host of bge-embed (llm-gateway-embed) for wg-mesh consumers [T016430]. Dev: embed.localhost; prod: bge-embed.${PROD_DOMAIN}."
+
+  - name: VECTOR_DB_ENABLED
+    required: false
+    default_dev: "1"
+    validate: "^(0|1)$"
+    description: "Vektor-Suche (Codesearch + Knowledge, pgvector) nur in Dev bedienen [T016560]. Dev: 1; Prod: 0 (Extension wird gedroppt)."
+
+  - name: BGE_RERANK_HOST
+    required: false
+    default_dev: "rerank.localhost"
+    validate: "^[a-z0-9.-]+$"
+    description: "Internal host of bge-rerank (llm-gateway-rerank) for wg-mesh consumers [T016430]. Dev: rerank.localhost; prod: bge-rerank.${PROD_DOMAIN}."
+
+  - name: WG_INTERNAL_CIDR
+    required: false
+    default_dev: "192.168.100.0/24"
+    validate: "^[0-9./]+$"
+    description: "wg-mesh source CIDR allowed on internal endpoints (fail-closed ipWhiteList, T016430)."
+
+  - name: POD_CIDR
+    required: false
+    validate: "^[0-9./]+$"
+    description: "Cluster Pod-CIDR fuer die NetworkPolicies (k3d/network-policies.yaml, k3d/website.yaml) [T901777]. k3s-Default 10.42.0.0/16 (alle Fleet-Cluster, lokales k3d); devmesh 10.52.0.0/16 (ADR-008). Bewusst kein default_dev: environments/dev.yaml (devmesh) und environments/dev-cluster.yaml (fleet) sind beide environment=dev mit verschiedenen Clustern. Render-Pfade fallen auf den k3s-Default zurueck."
+
+  - name: SERVICE_CIDR
+    required: false
+    validate: "^[0-9./]+$"
+    description: "Cluster Service-CIDR (ClusterIP) fuer die NetworkPolicies [T901777]. k3s-Default 10.43.0.0/16 (alle Fleet-Cluster, lokales k3d); devmesh 10.53.0.0/16 (ADR-008). Kein default_dev — siehe POD_CIDR."
+
+  - name: POD_VTEP_IP
+    required: false
+    validate: "^[0-9.]+$"
+    description: "Flannel-VTEP-Adresse des Control-Plane-Nodes fuer die NetworkPolicies (k3d/network-policies.yaml) [T901777]. Abgeleitet als Basisadresse von POD_CIDR (scripts/devmesh/render-stack.sh, Taskfile.workspace.yml, scripts/flux-render-artifact.sh). Bewusst kein default_dev — siehe POD_CIDR."
+
+  - name: BRETT_DOMAIN
+    required: true
+    default_dev: "brett.localhost"
+
+  - name: MEDIAVIEWER_HOST
+    required: true
+    default_dev: "mediaviewer.localhost"
+    description: "Public host of the mediaviewer widget (e.g. mediaviewer.korczewski.de)"
+
+  - name: VIDEOVAULT_DOMAIN
+    required: true
+    default_dev: "videovault.localhost"
+    description: "Public host of the VideoVault service (e.g. videovault.korczewski.de)"
+
+  - name: STUDIO_DOMAIN
+    required: true
+    default_dev: "studio.localhost"
+    validate: "^[a-z0-9.-]+$"
+    description: "Public host of the Coaching Studio service (T001002). Dev: studio.localhost; prod: studio.${PROD_DOMAIN}."
+
+  - name: STUDIO_IMAGE
+    required: true
+    default_dev: "studio-server"
+    description: "Image (image:tag, image@digest) for the studio-server Deployment. workspace:deploy uses :latest; prod pins to digest."
+
+  - name: STUDIO_IMAGE_DIGEST
+    required: true
+    default_dev: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    validate: "^sha256:[a-f0-9]{64}$"
+    description: "Image digest (sha256:...) for the production studio-server image."
+
+  - name: WHISPER_URL
+    required: false
+    default_dev: "http://whisper.workspace.svc.cluster.local:8000"
+    description: "In-cluster faster-whisper endpoint for coach-mic transcription."
+
+  - name: RECOVER_DOMAIN
+    required: true
+    default_dev: "recover.localhost"
+
+  - name: OTEL_DOMAIN
+    required: true
+    default_dev: "otel.localhost"
+    validate: "^[a-z0-9.-]+$"
+    description: "Public hostname of the OTel collector OTLP ingress (otel.<domain>)"
+
+  - name: WEBSITE_HOST
+    required: true
+    default_dev: "web.localhost"
+    validate: "^[a-z0-9.-]+(:[0-9]+)?$"
+
+  - name: WEBSITE_SITE_URL
+    required: true
+    default_dev: "http://web.localhost"
+
+  # CORS allowlist origin for the React SPA (react.<brand>) calling the Astro
+  # website cross-origin (same-site). Optional: only the mentolder brand ships
+  # a React app today; other brands leave it empty → CORS stays fail-closed.
+  - name: REACT_APP_ORIGIN
+    required: false
+    default_dev: "http://react.localhost"
+
+  # Arena WebSocket URL — last-man-standing game server (mentolder only).
+  - name: ARENA_WS_URL
+    required: false
+    default_dev: ""
+    description: "WebSocket URL of the Arena game server (optional, mentolder-only). Set in environments/.secrets/mentolder.yaml."
+
+  # KEYCLOAK_FRONTEND_URL removed — Keycloak decommissioned (pocket-id-migration Welle 3, 2026-06-22).
+
+  - name: POCKET_ID_FRONTEND_URL
+    required: true
+    default_dev: "http://auth.localhost"
+    description: "Public URL of the Pocket ID OIDC issuer — auth.<domain> in prod (was id.<domain> before Keycloak removal)."
+
+  - name: POCKET_ID_URL
+    required: false
+    default_dev: "http://pocket-id.workspace.svc.cluster.local:1411"
+    description: "Cluster-internal URL of the Pocket ID service. MUST be an FQDN (T002154): the website runs in namespace `website`, pocket-id in `workspace` — the bare short name `pocket-id:1411` only resolves inside `workspace` and breaks the OIDC token exchange cross-namespace. Used by the website, brett, nextcloud and grafana services as the OIDC discovery base."
+
+  - name: WEBSITE_CONFIG_SHA
+    required: false
+    default_dev: "unset"
+    description: "T002154: content hash of the rendered website-config ConfigMap, injected as the pod-template annotation `checksum/config`. Computed AFTER envsubst by the deploy path (Taskfile / build-website.yml) so a config change actually triggers a rollout — envFrom values are frozen at container start and do not propagate on ConfigMap updates."
+
+  - name: POCKET_ID_DOMAIN
+    required: true
+    default_dev: "auth.localhost"
+    validate: "^[a-z0-9.-]+$"
+    description: "Public hostname of the Pocket ID OIDC issuer (auth.<domain> or id.<domain>). Used for Traefik IngressRoute matching, oauth2-proxy issuer URLs, and OIDC endpoint construction."
+
+  # KC_DOMAIN removed — Keycloak decommissioned (pocket-id-migration Welle 3, 2026-06-22).
+
+  - name: LLM_HOST_IP
+    required: false
+    default_dev: ""
+    description: "Mesh IP of the GPU host (Windows) running llama.cpp (chat) and Ollama. Required when LLM_ENABLED=true. bge-Embedding/Reranking laufen seit T002551 in-Cluster (k3d/llm-gpu.yaml) und verwenden diese Variable nicht mehr. The dev env sets this explicitly in environments/dev.yaml."
+
+  - name: LLM_ENABLED
+    required: true
+    default_dev: "false"
+    description: "If true, bge-m3 embeddings go to llm-gateway-embed (llama.cpp, port 8081) and rerank goes to llm-gateway-rerank (llama.cpp, port 8081). If false, embeddings fail closed (T016562: Voyage entfernt)."
+    validate: "^(true|false)$"
+
+  - name: LLM_RERANK_ENABLED
+    required: true
+    default_dev: "true"
+    description: "If true, knowledge query path reranks results via LLM_RERANKER_URL (llama.cpp bge-reranker-v2-m3 on port 8081)."
+    validate: "^(true|false)$"
+
+  - name: LLM_RERANKER_URL
+    required: false
+    default_dev: "http://llm-gateway-rerank:8081"
+    description: "Base URL of the llama.cpp reranker service (used when LLM_RERANK_ENABLED=true)."
+
+  # LLM_LMSTUDIO_URL removed — LM Studio abgeschaltet.
+  # LLM_CHAT_MODEL removed — kein Consumer; LM Studio abgeschaltet.
+  # LLM_CODING_MODEL removed — kein Consumer; LM Studio abgeschaltet.
+
+  - name: LLM_EMBED_MODEL
+    required: false
+    default_dev: "bge-m3"
+    description: "Model ID for llama.cpp embedding server (bge-m3). llama-server ignoriert das Feld im Single-Model-Betrieb; Dokumentationswert."
+
+  # LLM_EMBED_MODEL_NOMIC removed — kein Consumer; nomic-embed-text-v1.5 hat kein GGUF im Bestand.
+
+  - name: COMFY_HOST_IP
+    required: false
+    default_dev: ""
+    description: "Mesh IP of the GPU host running ComfyUI. Empty disables 3D generation (returns 503)."
+
+  - name: COMFY_PORT
+    required: false
+    default_dev: ""
+    description: "Port ComfyUI listens on. Must NOT be 8188 (conflicts with Janus WebSocket)."
+
+  - name: RIGGER_HOST_IP
+    required: false
+    default_dev: ""
+    description: "Mesh IP of the GPU host running the Blender Rigger service. Defaults to COMFY_HOST_IP when empty."
+
+  - name: RIGGER_PORT
+    required: false
+    default_dev: "8190"
+    description: "Port the Rigger FastAPI service listens on. Default 8190."
+
+  - name: LLM_ROUTER_URL
+    required: false
+    default_dev: "http://llm-gateway-lmstudio.workspace.svc.cluster.local:1234"
+    description: "Cluster-internal OpenAI-compatible chat endpoint for studio-server (components/studio-server/src/config.ts, k3d/studio.yaml). Render-Pfade (Taskfile.workspace.yml) fallen auf den LM-Studio-Gateway-Default zurueck."
+
+  - name: LLM_EMBED_URL
+    required: true
+    default_dev: "http://llm-gateway-embed:8081"
+    description: "Cluster-internal URL for embeddings — llama.cpp bge-m3 server port 8081 (via /v1/embeddings)."
+
+  # T002551 — Batch-Paar (LLM_EMBED_BATCH_URL, LLM_RERANKER_BATCH_URL,
+  # LLM_BGE_LATENCY_BUDGET_MS, LLM_BGE_QUEUE_LIMIT) entfernt: die bge-Server
+  # laufen als CPU-only-Deployments im Cluster, Failover/Overload-Erkennung
+  # hat die K8s-Readiness uebernommen.
+
+  # ─────────────────────────────────────────────────────────────────
+  # Collabora (office-stack) — all five derived from PROD_DOMAIN inside
+  # `workspace:office:deploy` (Taskfile.yml ~line 779). Declared here so
+  # the schema audit doesn't keep re-flagging them; the envsubst call in
+  # the office task is the single source of truth for their values.
+  # ─────────────────────────────────────────────────────────────────
+  - name: COLLABORA_HOST
+    required: false
+    default_dev: "office.localhost"
+    description: "Public Collabora hostname. Auto-derived as office.${PROD_DOMAIN}."
+
+  - name: COLLABORA_ALIASGROUP1
+    required: false
+    default_dev: "http://nextcloud.workspace.svc.cluster.local:80"
+    description: "WOPI upstream host Collabora trusts. Auto-derived from PROD_DOMAIN; localhost gets the cluster-internal Nextcloud Service URL."
+
+  - name: COLLABORA_SERVER_NAME
+    required: false
+    default_dev: "office.localhost"
+    description: "coolwsd server_name. Auto-derived as office.${PROD_DOMAIN}."
+
+  - name: COLLABORA_SSL_TERMINATION
+    required: false
+    default_dev: "false"
+    description: "Whether Traefik terminates TLS upstream. Auto-set to 'true' in prod, 'false' for *.localhost."
+
+  - name: COLLABORA_TLS_SECRET
+    required: false
+    default_dev: "collabora-tls-dev"
+    description: "Name of the TLS Secret the Collabora Ingress references. Auto-set to ${TLS_SECRET_NAME} in prod, dev-only literal otherwise."
+
+  - name: COLLABORA_HOST_2
+    required: false
+    default_dev: ""
+    description: "Second brand Collabora hostname (multi-brand office-stack only). Auto-derived in fleet-deploy; empty in single-brand deploys."
+
+  - name: COLLABORA_ALIASGROUP2
+    required: false
+    default_dev: ""
+    description: "Second brand WOPI upstream alias (multi-brand office-stack only). Auto-derived in fleet-deploy; empty in single-brand deploys."
+
+  # ─────────────────────────────────────────────────────────────────
+  # Dev stack (dev.mentolder.de) — only meaningful when ENV=mentolder.
+  # All five have `default_dev: ""` so the dev k3d cluster (which
+  # treats schema "dev" defaults as its own) ignores them.
+  # ─────────────────────────────────────────────────────────────────
+  - name: DEV_DOMAIN
+    required: false
+    default_dev: ""
+    description: "Public base domain for the dev stack (e.g. dev.mentolder.de). Empty disables the dev stack. scripts/flux-render-artifact.sh reads this value from environments/dev-cluster.yaml for the fleet-rendered stack (workspace-dev); environments/dev.yaml describes only the local k3d environment and no longer controls the cluster dev stack (T002630)."
+
+  - name: DEV_NODE
+    required: false
+    default_dev: ""
+    description: "Hostname of the k3s node that runs the dev k3d cluster (e.g. gekko-hetzner-2). Used by the dev-stack tasks (cluster creation, SSH, firewall) in Taskfile.dev-stack.yml. The dev-db-refresh CronJob that formerly used it as nodeSelector was removed in T002699."
+
+  - name: DEV_WEBSITE_HOST
+    required: false
+    default_dev: ""
+    description: "Public hostname of the dev website (auto-derived as web.${DEV_DOMAIN} when DEV_DOMAIN is set)."
+
+  - name: DEV_BRETT_HOST
+    required: false
+    default_dev: ""
+    description: "Public hostname of the dev Brett (auto-derived as brett.${DEV_DOMAIN})."
+
+  - name: DEV_BGE_EMBED_HOST
+    required: false
+    default_dev: ""
+    description: "Internal wg-mesh hostname of the bge-embed endpoint (T016422). Consumed by k3d/dev-stack/internal-mcp-ingress.yaml; operator DNS resolves it to the fleet edge."
+
+  - name: DEV_BGE_RERANK_HOST
+    required: false
+    default_dev: ""
+    description: "Internal wg-mesh hostname of the bge-rerank endpoint (T016422). Consumed by k3d/dev-stack/internal-mcp-ingress.yaml; operator DNS resolves it to the fleet edge."
+
+  # ─────────────────────────────────────────────────────────────────
+  # devmesh (ADR-008, T900118) — lokaler HA-Cluster, ENV=dev
+  # ─────────────────────────────────────────────────────────────────
+  - name: DEVMESH_DOMAIN
+    required: false
+    default_dev: ""
+    validate: "^[a-z0-9.-]*$"
+    description: "Base domain of the devmesh development instance, set in environments/dev.yaml. Hosts are <service>.${DEVMESH_DOMAIN}; the public A records point to tailnet addresses only."
+
+  - name: LANGFUSE_PUBLIC_HOST
+    required: false
+    default_dev: ""
+    validate: "^[a-z0-9.-]*$"
+    description: "Public host of the devmesh Langfuse (T900691). fleet terminates TLS with the prod wildcard and proxies over Tailscale to the devmesh Traefik web entrypoint."
+
+  - name: DEVMESH_PROFILE
+    required: false
+    default_dev: "core"
+    validate: "^(core|full)$"
+    description: "Overlay rendered by task devmesh:deploy: core (default until SP-5) or full (core + nextcloud, collabora, talk, vaultwarden)."
+
+  - name: SDLC_CONSOLE_SITE_URL
+    required: false
+    default_dev: ""
+    description: "Public base URL of the fleet sdlc-console (T016422). The Flux render has no Taskfile.sdlc.yml env — without an explicit value here the ConfigMap placeholder would silently substitute empty (T002174 error class)."
+
+  - name: SDLC_CONSOLE_POCKET_ID_FRONTEND_URL
+    required: false
+    default_dev: ""
+    description: "Pocket ID frontend URL used by the fleet sdlc-console OIDC flow (prod-auth mode, RP-ID bound)."
+
+  - name: SDLC_CONSOLE_POCKET_ID_URL
+    required: false
+    default_dev: ""
+    description: "Pocket ID backend URL used by the fleet sdlc-console OIDC flow."
+
+  - name: SDLC_CONSOLE_POCKET_ID_CLIENT_ID
+    required: false
+    default_dev: ""
+    description: "Registered Pocket ID client id for the fleet sdlc-console; client registration is an operator step (ADR-007 appendix A.5)."
+
+  - name: DEV_SSH_USER
+    required: false
+    default_dev: "root"
+    description: "SSH user for connecting to DEV_NODE (e.g. gekko). Defaults to root for backwards compatibility."
+
+  - name: DEV_SSH_ALLOWLIST
+    required: false
+    default_dev: ""
+    description: "Comma-separated CIDR list allowed to reach :2222 on the dev node. Empty means deny-all from public Internet."
+
+  - name: PINO_LOG_LEVEL
+    description: Pino log level for the website SSR logger (info in dev, warn in prod)
+    required: false
+    default_dev: "info"
+
+  - name: WEBSITE_PRIMARY_SERVICE
+    required: false
+    default_dev: "website"
+    description: "Primary website service name (derived from PRIMARY_FRONTEND in workspace:deploy: 'website' for astro, 'mentolder-web' for react)."
+
+  - name: COLLABORA_INGRESS_MIDDLEWARES
+    required: false
+    default_dev: ""
+    description: "Traefik ingress middleware chain for Collabora office stack on primary brand."
+
+  - name: COLLABORA_INGRESS_MIDDLEWARES_2
+    required: false
+    default_dev: ""
+    description: "Traefik ingress middleware chain for Collabora office stack on Korczewski brand."
+
+  - name: COLLABORA_INGRESS_MIDDLEWARES_KORCZEWSKI
+    required: false
+    default_dev: ""
+    description: "Alias for COLLABORA_INGRESS_MIDDLEWARES_2."
+
+  - name: COLLABORA_TLS_SECRET_2
+    required: false
+    default_dev: "korczewski-tls"
+    description: "TLS secret name for Collabora ingress on Korczewski brand."
+
+  - name: POCKET_ID_SMTP_TLS
+    required: false
+    default_dev: "none"
+    description: "SMTP TLS mode for Pocket ID ('tls', 'starttls', or 'none', derived from SMTP_SECURE + SMTP_PORT)."
+
+  - name: POCKET_ID_FALLBACK_FRONTEND_URL
+    required: false
+    default_dev: "https://auth.mentolder.de"
+    description: "Optional fallback Pocket ID frontend URL for SDLC stack."
+
+  - name: POCKET_ID_FALLBACK_URL
+    required: false
+    default_dev: "https://auth.mentolder.de"
+    description: "Optional fallback Pocket ID internal URL for SDLC stack."
+
+secrets:
+
+
+
+
+  - name: STUDIO_DB_URL
+    required: false
+    default_dev: "postgresql://website:$(WEBSITE_DB_PASSWORD)@shared-db:5432/website?sslmode=disable"
+    description: "Connection URL for the studio-server (shared-db `website` database, schema-prefixed as `studio.*`)."
+  - name: SHARED_DB_PASSWORD
+    required: true
+    generate: true
+    length: 32
+
+  # KEYCLOAK_DB_PASSWORD and KEYCLOAK_ADMIN_PASSWORD removed — Keycloak decommissioned
+  # (pocket-id-migration Welle 3, 2026-06-22). Point of no return reached — do NOT
+  # re-seal or re-add. The keys were also purged from environments/.secrets/*.yaml and
+  # the Postgres `keycloak` databases and roles were dropped in workspace,
+  # workspace-korczewski and workspace-staging (T002205, 2026-07-26).
+
+  - name: NEXTCLOUD_DB_PASSWORD
+    required: true
+    generate: true
+    length: 32
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: NEXTCLOUD_ADMIN_PASSWORD
+    required: true
+    generate: true
+    length: 24
+    description: "Random by default — retrieve via `kubectl get secret workspace-secrets -n <ns> -o jsonpath='{.data.NEXTCLOUD_ADMIN_PASSWORD}' | base64 -d`. Override via env_vars: in the env file."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+        dest_key: NEXTCLOUD_ADMIN_PASS
+      - namespace: website
+        secret: website-secrets
+        dest_key: NEXTCLOUD_CALDAV_PASSWORD
+
+  # NEXTCLOUD_OIDC_SECRET removed — Keycloak decommissioned (pocket-id-migration Welle 3, 2026-06-22).
+
+  # ─────────────────────────────────────────────────────────────────
+  # Variables intentionally NOT in this schema (audit allowlist)
+  #
+  # The weekly schema audit flags every `${VAR}` reference in k3d/ and
+  # prod/ that isn't declared here. The following are known false
+  # positives — they look like envsubst targets but never reach envsubst.
+  # Do not "fix" the audit by adding them; update this comment instead.
+  #
+  # 1. Signaling keys (hardcoded in pod env, stable within pod lifetime):
+  #      SESSION_HASHKEY, SESSION_BLOCKKEY, CLIENTS_INTERNALSECRET, TURN_APIKEY
+  #      — substituted by `sed` at container startup in k3d/talk-hpb.yaml
+  #      (line ~186) from values living in the Deployment's env: block. If
+  #      these ever become rotated secrets, promote them into this section.
+  #
+  # 2. Shell-local script vars (defined and used in the same container
+  #    script, never touched by envsubst):
+  #      ARCH                (k3d/nextcloud.yaml — set via `uname -m`)
+  #      BACKUP_DIR, STAMP, PASS, UPLOAD_PATH, FILEN_PATH, DUMP, SIZE
+  #                          (k3d/backup-cronjob.yaml — script-local)
+  #      DOMAIN, IP, IP_4, IP_6, IP_8, STATUS, FAILED
+  #                          (prod-korczewski/ddns-updater.yaml — script-local
+  #                           shell vars inside the ipv64 DDNS CronJob)
+  #
+  # 3. Pod env vars sourced from a ConfigMap/Secret reference (not
+  #    envsubst — the `${VAR}` in the script reads the container env):
+  #      BRAND, FILEN_DEFAULT_UPLOAD_PATH
+  #                          (k3d/backup-cronjob.yaml — `backup-config` CM)
+  #      BRAND               (k3d/knowledge-ingest-cronjob.yaml — hardcoded
+  #                           value: "mentolder" in the env: block)
+  # 4. Vaultwarden seed-job aliases (set inside the script from *_DOMAIN
+  #    pod env vars; the manifest is NOT envsubst-substituted, only
+  #    namespace-sed-rewritten in workspace:vaultwarden:seed):
+  #      KC, NC, WEB, DOCS, OFFICE
+  #                          (k3d/vaultwarden-seed-job.yaml lines 60-64)
+  #    Pocket ID client-seed script vars (k3d/pocket-id-client-seed.yaml):
+  #      SCHEME, SUFFIX
+  #                          (dynamically constructed from PROD_DOMAIN inside the
+  #                           workspace:deploy task; never reach envsubst)
+  #
+  # 5. Taskfile-derived deploy-time variables (computed or pinned in the
+  #    task body, passed directly to envsubst — not stored in environments/):
+  #      COLLABORA_INGRESS_MIDDLEWARES
+  #                          (k3d/office-stack/ingress.yaml — computed from
+  #                           WORKSPACE_NAMESPACE in workspace:office:deploy)
+  #      COLLABORA_INGRESS_MIDDLEWARES_2
+  #                          (k3d/office-stack/ingress-korczewski.yaml — computed
+  #                           for the korczewski brand in workspace:office:deploy)
+  #      COLLABORA_TLS_SECRET_2
+  #                          (k3d/office-stack/ingress-korczewski.yaml — hardcoded
+  #                           to "korczewski-tls" in workspace:office:deploy)
+  #      WEBSITE_PRIMARY_SERVICE
+  #                          (k3d/website.yaml — derived from PRIMARY_FRONTEND
+  #                           in workspace:deploy: "website" for astro,
+  #                           "mentolder-web" for react)
+  #      POCKET_ID_SMTP_TLS
+  #                          (k3d/pocket-id.yaml — derived from SMTP_SECURE +
+  #                           SMTP_PORT in workspace:deploy: "tls" / "starttls"
+  #                           / "none")
+  #
+  # 6. Comment text matched by the audit regex (not real envsubst targets):
+  #      VAR                 (k3d/coturn-stack/coturn.yaml line ~43 — used
+  #                           in a YAML comment explaining $(VAR) vs ${VAR})
+  #
+  # 7. Runtime shell vars in pvc-backup-cronjob.yaml's embedded Job-generation
+  #    heredoc (MJOB). The $${VAR} notation double-escapes the $ so envsubst
+  #    never touches them; the container shell evaluates them at runtime:
+  #      DS_AFFINITY, DS_CLAIM, VW_AFFINITY, VW_CLAIM
+  #                          (affinity and volume claim names in generated Job spec)
+  #      LABEL, MOUNTER, OUT, SRC
+  #                          (script-local loop vars in the backup Job shell script)
+  # ─────────────────────────────────────────────────────────────────
+  - name: SIGNALING_SECRET
+    required: true
+    generate: true
+    length: 32
+    extra_namespaces:
+      - namespace: coturn
+        secret: coturn-secrets
+        owner_brand: [mentolder]
+
+  - name: TURN_SECRET
+    required: true
+    generate: true
+    length: 32
+    extra_namespaces:
+      - namespace: coturn
+        secret: coturn-secrets
+        owner_brand: [mentolder]
+
+  - name: RUSTDESK_ID_ED25519
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Host-generiertes Schluesselmaterial; kein Konsument in k3d/ oder prod*/."
+    extra_namespaces:
+      - namespace: rustdesk
+        secret: rustdesk-secrets
+        dest_key: id_ed25519
+        owner_brand: [mentolder]
+
+  - name: RUSTDESK_ID_ED25519_PUB
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Host-generiertes Schluesselmaterial; kein Konsument in k3d/ oder prod*/."
+    extra_namespaces:
+      - namespace: rustdesk
+        secret: rustdesk-secrets
+        dest_key: id_ed25519.pub
+        owner_brand: [mentolder]
+
+  - name: CRON_SECRET
+    required: true
+    generate: true
+    length: 48
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: OAUTH2_PROXY_COOKIE_SECRET
+    required: true
+    generate: true
+    length: 32
+
+  - name: COLLABORA_ADMIN_PASSWORD
+    required: true
+    generate: true
+    length: 24
+    extra_namespaces:
+      - namespace: workspace-office
+        secret: collabora-secrets
+
+  - name: WHITEBOARD_JWT_SECRET
+    required: true
+    generate: true
+    length: 32
+
+  - name: VAULTWARDEN_DB_PASSWORD
+    required: true
+    generate: true
+    length: 32
+
+  - name: VAULTWARDEN_ADMIN_TOKEN
+    required: true
+    generate: true
+    length: 48
+
+  # VAULTWARDEN_OIDC_SECRET removed — Keycloak decommissioned (pocket-id-migration Welle 3, 2026-06-22).
+
+  - name: WEBSITE_DB_PASSWORD
+    required: true
+    generate: true
+    length: 32
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  # T901440 (Massage-Tenant): Einfuehrungsstatus optional — die Keys werden
+  # von Hand in fleet-mentolder/fleet-korczewski angelegt und versiegelt.
+  # Der Massage-Key wird zusaetzlich nach website-secrets exportiert
+  # (ns_remap: website -> WEBSITE_NS des jeweiligen Envs).
+  - name: WEBSITE_MASSAGE_DB_PASSWORD
+    required: false
+    generate: true
+    length: 32
+    description: "Postgres role password for the `website_massage` DB inside the central shared-db (T901440)."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  # Per-key derivation overrides (T901698): `derive_version` pins this key to a
+  # different HKDF version than `derivation.version`; `derived: false` opts a
+  # `generate: true` key out of derivation (stays must-store). This entry uses
+  # the defaults (global version, derived because `generate: true`).
+  - name: POCKET_ID_KORCZEWSKI_DB_PASSWORD
+    required: false
+    generate: true
+    length: 32
+    description: "Postgres role password for the `pocket_id_korczewski` DB inside the central shared-db (T901440)."
+
+  # WEBSITE_OIDC_SECRET removed — Keycloak decommissioned (pocket-id-migration Welle 3, 2026-06-22).
+
+  - name: RECORDING_SECRET
+    required: true
+    generate: true
+    length: 32
+
+  - name: TRANSCRIBER_BOT_PASSWORD
+    required: true
+    generate: true
+    length: 24
+
+  - name: TRANSCRIBER_SECRET
+    required: true
+    generate: true
+    length: 32
+
+  - name: SMTP_PASSWORD
+    required: true
+    generate: false
+    default_dev: "dev"
+    description: "Mailpit (dev) accepts any password. For prod set in env_vars: of the env file before env:generate, or paste at the prompt."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+      # monitoring/alertmanager-smtp mirror removed — email alerting is
+      # unconfigured (generated config has no email_configs) and the shared
+      # Secret was dual-brand last-write-wins (T901715). Prod overlay deletes
+      # the Secret anyway (prod/monitoring/kustomization.yaml).
+
+  - name: SMTP_FROM
+    required: true
+    generate: false
+
+  - name: SMTP_USER
+    required: true
+    generate: false
+
+  - name: MAILBOX_EMAIL
+    required: false
+    generate: false
+    dev_absent: true
+    dev_absent_reason: "Local-only mailbox-mcp credential; no consumer in k3d/ or prod*/."
+    description: "mailbox.org login for the local mailbox-mcp server (copied from env_vars, like SMTP_USER)."
+
+  - name: MAILBOX_PASSWORD
+    required: false
+    generate: false
+    dev_absent: true
+    dev_absent_reason: "Local-only mailbox-mcp credential; no consumer in k3d/ or prod*/."
+    description: "App password for MAILBOX_EMAIL (mailbox-mcp); set in .secrets/<env>.yaml when needed."
+
+  # DOCS_OIDC_SECRET, RECOVERY_OIDC_SECRET, BRAINSTORM_OIDC_SECRET, SESSION_HUB_OIDC_SECRET
+  # removed — Keycloak decommissioned (pocket-id-migration Welle 3, 2026-06-22).
+  # POCKET_ID_* equivalents are below.
+
+  # ─────────────────────────────────────────────────────────────────
+  # Pocket ID OIDC client secrets (T001068) — supersede the *_OIDC_SECRET
+  # keys above once each service is migrated. The old keys remain in the
+  # schema through Welle 2 so both providers can be in-flight concurrently
+  # (Keycloak still powers auth.<domain> until Welle 3 drops it).
+  # Welle 3 cleanup removes the old *_OIDC_SECRET keys.
+  # ─────────────────────────────────────────────────────────────────
+  - name: POCKET_ID_API_KEY
+    required: false
+    generate: true
+    length: 64
+    description: "Bearer token for the Pocket ID Admin REST API. Used by the website's identity.ts (User-CRD operations) and any other in-cluster admin caller."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: POCKET_ID_ENCRYPTION_KEY
+    required: false
+    sealed: true
+    description: "AES encryption key (64-char hex / 32 bytes) used by Pocket ID to encrypt the JWT private key and other sensitive data at rest in the DB. Changing this key requires deleting the jwt_private_key.json from the kv table so Pocket ID can regenerate it."
+
+  - name: POCKET_ID_DB_PASSWORD
+    required: false
+    generate: true
+    length: 32
+    description: "Postgres role password for the `pocket_id` DB inside shared-db."
+
+  - name: POCKET_ID_MAIL_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `mailpit-admin` Pocket ID client (oauth2-proxy-mailpit)."
+
+  - name: POCKET_ID_TRAEFIK_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `traefik-dashboard` Pocket ID client (oauth2-proxy-traefik)."
+
+  - name: POCKET_ID_COMFY_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `comfy` Pocket ID client (oauth2-proxy-comfy)."
+
+  - name: POCKET_ID_MEDIAVIEWER_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `mediaviewer-widget` Pocket ID client (oauth2-proxy-mediaviewer)."
+
+  - name: POCKET_ID_VIDEOVAULT_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `videovault` Pocket ID client (oauth2-proxy-videovault)."
+
+  - name: POCKET_ID_STUDIO_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `studio` Pocket ID client (oauth2-proxy-studio). Pocket ID has no groups — the studio coach allow-list moves to --authenticated-emails-file."
+
+  - name: POCKET_ID_RUSTDESK_WEB_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `rustdesk-web` Pocket ID client (oauth2-proxy-rustdesk-web)."
+
+  - name: POCKET_ID_DOCS_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `docs` Pocket ID client (oauth2-proxy-docs)."
+
+  - name: POCKET_ID_BRAIN_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `brain` Pocket ID client (oauth2-proxy-brain, T001569 — mentolder-only Quartz LLM-wiki static site)."
+
+  - name: POCKET_ID_DOWNLOADS_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `downloads` Pocket ID client (oauth2-proxy-downloads)."
+
+  - name: POCKET_ID_VAULTWARDEN_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `vaultwarden` Pocket ID client (vaultwarden SSO_CLIENT_SECRET + oauth2-proxy-vaultwarden if present)."
+
+  - name: POCKET_ID_RECOVERY_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `recovery` Pocket ID client (oauth2-proxy-recovery in k3d/recovery-browser.yaml)."
+
+  - name: POCKET_ID_NEXTCLOUD_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `nextcloud` Pocket ID client (nextcloud_oidc_login plugin)."
+
+  - name: POCKET_ID_GRAFANA_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `grafana` Pocket ID client (GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET)."
+    extra_namespaces:
+      - namespace: monitoring
+        secret: grafana-oidc
+
+  - name: POCKET_ID_WEBSITE_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `website` Pocket ID client (website's auth.ts)."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: POCKET_ID_BRETT_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `brett` Pocket ID client (brett's oauth2-proxy + native OIDC)."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: POCKET_ID_CLAUDE_CODE_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the claude-code Pocket ID client (k3d/pocket-id-client-seed.yaml)."
+
+  # POCKET_ID_BRAINSTORM_SECRET is dev-only (brainstorm.dev.mentolder.de; no prod broker).
+  - name: POCKET_ID_BRAINSTORM_SECRET
+    required: false
+    generate: true
+    length: 40
+
+  # POCKET_ID_SESSION_HUB_SECRET is dev-only.
+  - name: POCKET_ID_SESSION_HUB_SECRET
+    required: false
+    generate: true
+    length: 64
+    description: "OIDC client secret for the session-hub oauth2-proxy (Pocket ID confidential client `session-hub`). Pocket ID has no groups — gating moves to --authenticated-emails-file."
+
+  - name: POCKET_ID_TERMINAL_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "OIDC client secret for the `terminal-sidekick` Pocket ID client (terminal oauth2-proxy)."
+
+  - name: SESSIONS_CRON_TOKEN
+    required: false
+    sealed: true
+    description: "Shared secret for the sessions-purge cronjob to call POST /api/admin/sessions/purge via X-Cron-Token header. [T000994]"
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  # BRETT_OIDC_SECRET is NOT a Keycloak OIDC client secret despite the name — it is the
+  # shared website↔brett admin/E2E secret sent as the `x-e2e-secret` header (website
+  # src/pages/api/admin/generate-3d/status.ts → brett src/server/auth.ts). It is still
+  # actively used; its website-secrets mapping was erroneously dropped in pocket-id Welle 3
+  # (the website Deployment requires it, optional=false), breaking the korczewski website
+  # pod. Restored here so `env:seal` re-emits it into website-secrets. [T001156]
+  - name: BRETT_OIDC_SECRET
+    required: false
+    generate: false
+    description: "Shared website↔brett admin/E2E secret (x-e2e-secret header). NOT a Keycloak OIDC client — do not remove. [T001156]"
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  # TRAEFIK_OIDC_SECRET, MAIL_OIDC_SECRET, MEDIAVIEWER_OIDC_CLIENT_SECRET
+  # removed — Keycloak decommissioned (pocket-id-migration Welle 3, 2026-06-22).
+  # POCKET_ID_* equivalents are above.
+
+  - name: VIDEOVAULT_DB_PASSWORD
+    required: true
+    generate: true
+    length: 48
+    description: "Password for the videovault PostgreSQL role in shared-db"
+
+  # VIDEOVAULT_OIDC_SECRET, STUDIO_OIDC_SECRET, COMFY_OIDC_SECRET
+  # removed — Keycloak decommissioned (pocket-id-migration Welle 3, 2026-06-22).
+  # POCKET_ID_* equivalents are above.
+
+  # OTel collector bearer token (per-brand, manually provisioned).
+  # Sealed into the monitoring ns as the otel-collector-auth Secret (key
+  # OTEL_AUTH_TOKEN) that the otel-collector Deployment reads for bearer auth.
+  - name: OTEL_AUTH_TOKEN
+    required: true
+    generate: false
+    description: "Bearer token the autopilot presents to the OTel collector ingress (per-brand, set manually in .secrets/<env>.yaml)"
+    extra_namespaces:
+      - namespace: monitoring
+        secret: otel-collector-auth
+
+  # Langfuse agent tracing (devmesh only, T900688)
+  - name: LANGFUSE_DB_PASSWORD
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Langfuse läuft ausschließlich auf devmesh; kein k3d-Secret."
+    generate: true
+    length: 32
+  - name: LANGFUSE_NEXTAUTH_SECRET
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Langfuse läuft ausschließlich auf devmesh; kein k3d-Secret."
+    generate: true
+    length: 32
+  - name: LANGFUSE_SALT
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Langfuse läuft ausschließlich auf devmesh; kein k3d-Secret."
+    generate: true
+    length: 32
+  - name: LANGFUSE_ENCRYPTION_KEY
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Langfuse läuft ausschließlich auf devmesh; kein k3d-Secret."
+    generate: false
+    description: "64 hex chars from openssl rand -hex 32"
+  - name: LANGFUSE_CLICKHOUSE_PASSWORD
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Langfuse läuft ausschließlich auf devmesh; kein k3d-Secret."
+    generate: true
+    length: 32
+  - name: LANGFUSE_REDIS_AUTH
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Langfuse läuft ausschließlich auf devmesh; kein k3d-Secret."
+    generate: true
+    length: 32
+  - name: LANGFUSE_S3_SECRET
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Langfuse läuft ausschließlich auf devmesh; kein k3d-Secret."
+    generate: true
+    length: 32
+  - name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Langfuse läuft ausschließlich auf devmesh; kein k3d-Secret."
+    generate: false
+    description: "Langfuse public API key pk-lf-<uuid>"
+  - name: LANGFUSE_INIT_PROJECT_SECRET_KEY
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Langfuse läuft ausschließlich auf devmesh; kein k3d-Secret."
+    generate: false
+    description: "Langfuse secret API key sk-lf-<uuid>"
+  - name: LANGFUSE_INIT_USER_EMAIL
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Langfuse läuft ausschließlich auf devmesh; kein k3d-Secret."
+    generate: false
+  - name: LANGFUSE_INIT_USER_NAME
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Langfuse läuft ausschließlich auf devmesh; kein k3d-Secret."
+    generate: false
+  - name: LANGFUSE_INIT_USER_PASSWORD
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Langfuse läuft ausschließlich auf devmesh; kein k3d-Secret."
+    generate: true
+    length: 24
+
+  # CLAUDE_CODE_OIDC_SECRET removed — Keycloak decommissioned (pocket-id-migration Welle 3, 2026-06-22).
+
+  - name: CLAUDE_CODE_WEBUI_SECRET_KEY
+    required: true
+    generate: true
+    length: 48
+
+  # External service keys (user-provided)
+  - name: GITHUB_PAT
+    required: false
+    generate: false
+
+  # GITHUB_CONTENT_TOKEN (T001490 Task 9) — fine-grained token for the bot-PR
+  # content publish pipeline (components/website/src/lib/content-publish.ts). Scope: only
+  # `contents: write` + `pull-requests: write` on `components/website/content/**`. Prod
+  # sealed per-env via `task env:seal`; dev placeholder lives in
+  # k3d/website-content-token-secret.yaml.
+  - name: GITHUB_CONTENT_TOKEN
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Externes GitHub-PAT; kein Dev-Aequivalent, ein Fake-Wert wuerde Konfigurationsfehler maskieren."
+    generate: false
+    description: "Fine-grained GitHub token for the content publish bot. contents:write + pull-requests:write on components/website/content/**."
+    extra_namespaces:
+      - namespace: website
+        secret: website-content-token
+
+  # ── Flux-Bootstrap-Secrets (T002251 → T002254) ────────────────────────────
+  # Die beiden SealedSecrets unter flux/clusters/fleet/bootstrap/ wurden in
+  # T002251 von Hand gesealt — ihr Plaintext lebte nur als laufendes Secret im
+  # fleet-Cluster. Seit T002254 erzeugt `task env:seal` sie aus diesem Schema.
+  # `owner_brand: [mentolder]`, weil der Namespace flux-system auf fleet nur
+  # einmal existiert (gleiches Muster wie coturn, T001404/T001584).
+  # Beide sind `required: false`: sie sind nutzergestellt, und ein
+  # fail-closed `required: true` würde `task env:seal` für mentolder blockieren,
+  # bis die einmalige Migration des Plaintexts erfolgt ist. Sind die Werte
+  # leer, lässt der Sealer die Zieldateien unangetastet statt einen leeren
+  # Ciphertext über den laufenden zu schreiben.
+  - name: GHCR_USERNAME
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Nur flux-system (ghcr-auth); k3d-Base hat kein Flux."
+    generate: false
+    description: "GitHub-Benutzername für den ghcr.io-Pull des Flux-OCI-Artefakts. Bildet mit GHCR_PAT das Secret flux-system/ghcr-auth. [T002254]"
+
+  - name: GHCR_PAT
+    required: false
+    generate: false
+    description: "GitHub-PAT (read:packages) für ghcr.io. Wird mit GHCR_USERNAME zum .dockerconfigjson des Secrets flux-system/ghcr-auth zusammengesetzt. [T002254]"
+    extra_namespaces:
+      - namespace: flux-system
+        secret: ghcr-auth
+        type: kubernetes.io/dockerconfigjson
+        registry: ghcr.io
+        username_key: GHCR_USERNAME
+        dest_key: .dockerconfigjson
+        output_file: flux/clusters/fleet/bootstrap/ghcr-auth-sealedsecret.yaml
+        owner_brand: [mentolder]
+
+  - name: FLUX_WEBHOOK_TOKEN
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Nur flux-system (flux-webhook-token); k3d-Base hat kein Flux."
+    generate: true
+    length: 32
+    description: "Shared Secret des Flux-Receiver-Webhooks (flux-system/flux-webhook-token). Reines Shared Secret ohne externe Bindung — darf generiert werden. [T002254]"
+    extra_namespaces:
+      - namespace: flux-system
+        secret: flux-webhook-token
+        dest_key: token
+        output_file: flux/clusters/fleet/bootstrap/flux-webhook-token-sealedsecret.yaml
+        owner_brand: [mentolder]
+
+  - name: MEETINGS_DB_PASSWORD
+    required: true
+    generate: true
+    length: 32
+
+  - name: SEPA_CREDITOR_IBAN
+    required: false
+    generate: false
+    description: "IBAN of the creditor account for SEPA direct debit (Lastschrift)"
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: SEPA_CREDITOR_BIC
+    required: false
+    generate: false
+    description: "BIC of the creditor bank for SEPA direct debit"
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: SEPA_CREDITOR_ID
+    required: false
+    generate: false
+    description: "Gläubiger-Identifikationsnummer (e.g. DE98ZZZ09999999999)"
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: BACKUP_PASSPHRASE
+    required: true
+    generate: true
+    length: 32
+
+  - name: FILEN_EMAIL
+    required: false
+    generate: false
+
+  - name: FILEN_PASSWORD
+    required: false
+    generate: false
+
+  - name: IPV64_API_KEY
+    required: false
+    generate: false
+    extra_namespaces:
+      - namespace: cert-manager
+        secret: ipv64-api-key
+      - namespace: website
+        secret: website-secrets
+
+  - name: IPV64_UPDATE_HASH
+    required: false
+    generate: false
+
+
+  - name: BRETT_BOT_SECRET
+    required: true
+    generate: true
+    length: 48
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: MONITORING_WEBHOOK_TOKEN
+    required: true
+    generate: true
+    length: 32
+    description: "Internal token for the monitoring webhook — random by default."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: TRACKING_DB_URL
+    required: false
+    generate: false
+    description: "Legacy — tracking-import CronJob was removed in PR #788 (2026-05-15). Retained only so existing sealed-secrets that still carry the key continue to deserialize cleanly. Safe to drop from new envs."
+
+  - name: INTERNAL_API_TOKEN
+    required: true
+    generate: true
+    length: 48
+    description: "Shared secret for cron-driven internal API calls (e.g. notify-close). Set in environments/.secrets/<env>.yaml then run `task env:seal ENV=<env>`."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  # T016562: VOYAGE_API_KEY-Definition entfernt (lokale bge-Embeddings).
+  # Die verschluesselten Karteileichen in sealed-secrets/* bleiben bis zur
+  # naechsten Seal-Rotation bestehen; kein Test fordert sie zurueck.
+
+  - name: ANTHROPIC_API_KEY
+    required: false
+    generate: false
+    description: "Anthropic API key. Used by the website for meeting insights (claude.ts) and coaching classification. Optional — the LLM router is local-only and does not fall back to Anthropic."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: DEEPSEEK_API_KEY
+    required: false
+    generate: false
+    description: "DeepSeek API key for coaching and website AI features (meeting insights, ticket triage, assistant chat). When set, DeepSeek is preferred over Anthropic via provider_config routing."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: DEEPSEEK_API_KEY_PK
+    required: false
+    generate: false
+    description: "DeepSeek API key (pk-deepseek, legacy autopilot). Separate from the coaching key so billing can be tracked per purpose. Exposed to the website pod."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: OPENROUTER_API_KEY
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Externes Provider-Credential; Fake-Wert maskiert Fehlkonfiguration."
+    generate: false
+    description: "OpenRouter API key for the OpenRouter provider in provider_config routing. Injected into the website pod via website-secrets."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: OPENCODE_API_KEY
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Externes Provider-Credential; Fake-Wert maskiert Fehlkonfiguration."
+    generate: false
+    description: "opencode Zen API key (covers the opencode Go subscription) for provider_config routing. Injected into the website pod via website-secrets."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: GEMINI_API_KEY
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Externes Provider-Credential; Fake-Wert maskiert Fehlkonfiguration."
+    generate: false
+    description: "Google Gemini API key for the google-gemini provider in provider_config routing. Injected into the website pod via website-secrets."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: GITHUB_MODELS_TOKEN
+    required: false
+    dev_absent: true
+    dev_absent_reason: "Externes Provider-Credential; Fake-Wert maskiert Fehlkonfiguration."
+    generate: false
+    description: "GitHub Models token for the github-models provider in provider_config routing. Injected into the website pod via website-secrets."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: LLM_ROUTER_API_KEY
+    required: false
+    generate: false
+    description: "API key for the Windows LM Studio / LM router (OpenAI-compatible, port 1234). Injected into the website pod via website-secrets."
+    extra_namespaces:
+      - namespace: website
+        secret: website-secrets
+
+  - name: HUGGINGFACE_TOKEN
+    required: false
+    generate: false
+    description: "HuggingFace API token for authenticated model downloads (ComfyUI, bge-m3 via TEI, Hunyuan3D). Get from https://huggingface.co/settings/tokens."
+    extra_namespaces:
+      - namespace: workspace
+        secret: knowledge-secrets
+
+  - name: HETZNER_API_KEY
+    required: false
+    generate: false
+    description: "Hetzner Cloud API token for the cluster's project. Used for node provisioning and automation via the Hetzner Cloud API."
+
+  # PUSHOVER_TOKEN/PUSHOVER_USER removed — Pushover routing decommissioned (T014542), dead config removed (T901739).
+
+  # GRAFANA_OIDC_SECRET removed — Keycloak decommissioned (pocket-id-migration Welle 3, 2026-06-22).
+
+  - name: GRAFANA_ADMIN_PASSWORD
+    required: true
+    generate: true
+    length: 24
+    description: "Grafana local admin password (fallback when OIDC is unavailable)."
+    extra_namespaces:
+      - namespace: monitoring
+        secret: grafana-oidc
+
+  # ─────────────────────────────────────────────────────────────────
+  # Dev stack — sealed against mentolder cluster cert.
+  # The shared-db-dev passwords are DISTINCT from prod's shared-db
+  # passwords so a leaked dev cred cannot unlock prod.
+  # ─────────────────────────────────────────────────────────────────
+  - name: DEV_SHARED_DB_PASSWORD
+    required: false
+    generate: true
+    length: 32
+    description: "Postgres superuser password for shared-db-dev (inside the dev k3d cluster)."
+
+  - name: DEV_WEBSITE_DB_PASSWORD
+    required: false
+    generate: true
+    length: 32
+    description: "Postgres role password for the `website` DB inside shared-db-dev."
+
+  - name: DEV_OAUTH2_PROXY_COOKIE_SECRET
+    required: false
+    generate: true
+    length: 32
+    description: "Cookie secret for oauth2-proxy-dev (separate from prod's OAUTH2_PROXY_COOKIE_SECRET)."
+
+  - name: DEV_WORKSPACE_OIDC_SECRET
+    required: false
+    generate: true
+    length: 40
+    description: "Confidential client secret for the workspace-dev OIDC client (Pocket ID)."
+
+  - name: DEV_SISH_AUTHORIZED_KEYS
+    required: false
+    generate: false
+    description: "SSH authorized_keys list (newline-separated) for sish — anyone who can publish a dev tunnel."
+
+  # ── Agent Push Notification Secrets (T000991) ────────────────────────────────
+  - name: NTFY_TOKEN_OPENCODE
+    required: false
+    generate: false
+    default_dev: "tk_opencode_dev_token_32chars_ab"
+    description: "Ntfy access token for opencode notifications (32 chars, starts with tk_)"
+  - name: NTFY_TOKEN_AGY
+    required: false
+    generate: false
+    default_dev: "tk_agy_dev_token_32chars_ab12345"
+    description: "Ntfy access token for agy notifications (32 chars, starts with tk_)"
+  - name: AGENT_PUSH_TOKEN
+    required: false
+    generate: false
+    default_dev: "ap_dev_token_32chars_abcdefgh"
+    description: "Bearer token for agent-push.sh to authenticate against the website settings API"
+
+  # ── LLM-Proxy Admin Token (T013909) ──────────────────────────────────────────
+  - name: LLM_PROXY_ADMIN_TOKEN
+    required: false
+    generate: false
+    default_dev: "dev-llm-proxy-admin-token-12345"
+    description: "Bearer token for cluster workloads (SDLC Cockpit) to authenticate against the LLM-Proxy host bridge listener"
+
+  # ── devmesh llm-services (T900191, design.md D5) ─────────────────────────────
+  # Gelesen von dev-local/components/llm-services aus workspace-secrets (Context devmesh).
+  # Nicht in k3d/secrets.yaml: devmesh rendert diese Datei nicht (dev-local/core).
+  - name: BGE_MCP_TOKEN
+    required: false
+    generate: true
+    length: 48
+    dev_absent: true
+    dev_absent_reason: "Nur devmesh (sealed-secrets/dev.yaml); k3d/secrets.yaml wird auf devmesh nicht gerendert."
+    description: "Bearer-Token des bge-mcp-Servers im devmesh-Pod llm-services (Port 13005)."
+  - name: MCP_POSTGRES_TOKEN
+    required: false
+    generate: true
+    length: 48
+    dev_absent: true
+    dev_absent_reason: "Nur devmesh (sealed-secrets/dev.yaml); k3d/secrets.yaml wird auf devmesh nicht gerendert."
+    description: "Bearer-Token des mcp-postgres-Servers im devmesh-Pod llm-services (Port 13001)."
+  - name: MCP_READONLY_DB_PASSWORD
+    required: false
+    generate: true
+    length: 32
+    dev_absent: true
+    dev_absent_reason: "Nur devmesh; task devmesh:registry:migrate setzt es per ALTER ROLE mcp_readonly."
+    description: "Passwort der Rolle mcp_readonly in der devmesh-shared-db (DATABASE_URL von mcp-postgres)."
+
+setup_vars:
+  - name: KC_USER1_USERNAME
+    required: true
+    default_dev: "admin"
+
+  - name: KC_USER1_EMAIL
+    required: true
+    validate: "^.+@.+$"
+    default_dev: "admin@localhost"
+
+  - name: KC_USER1_PASSWORD
+    required: true
+    sealed: true
+    default_dev: "DevAdmin123!"
+
+  - name: KC_USER2_USERNAME
+    required: false
+
+  - name: KC_USER2_EMAIL
+    required: false
+
+  - name: KC_USER2_PASSWORD
+    required: false
+    sealed: true
+
+  # ── WireGuard mesh node keys ────────────────────────────────────────────────
+  # One entry per permanent Hetzner cluster node. Private keys are sealed;
+  # public keys are plain (WG public keys are not sensitive). Stored here so
+  # the same private key survives every node reset — existing peers never need
+  # updating on recovery because the public key remains constant.
+  # Populated by: `wg genkey | tee /tmp/pk | wg pubkey` on first provisioning.
+  # See .claude/skills/hetzner-node/SKILL.md Phase 0 for the full workflow.
+  #
+  # mentolder cluster
+  - name: WG_MESH_GEKKO2_PRIVATE_KEY
+    required: false
+    sealed: true
+    legacy_only: true
+    description: "wg-mesh private key for gekko-hetzner-2"
+  - name: WG_MESH_GEKKO2_PUBLIC_KEY
+    required: false
+    legacy_only: true
+    description: "wg-mesh public key for gekko-hetzner-2 (non-sensitive, committed in wireguard/wg-mesh-nodes.yaml)"
+  - name: WG_MESH_GEKKO3_PRIVATE_KEY
+    required: false
+    sealed: true
+    legacy_only: true
+    description: "wg-mesh private key for gekko-hetzner-3"
+  - name: WG_MESH_GEKKO3_PUBLIC_KEY
+    required: false
+    legacy_only: true
+    description: "wg-mesh public key for gekko-hetzner-3"
+  - name: WG_MESH_GEKKO4_PRIVATE_KEY
+    required: false
+    sealed: true
+    legacy_only: true
+    description: "wg-mesh private key for gekko-hetzner-4"
+  - name: WG_MESH_GEKKO4_PUBLIC_KEY
+    required: false
+    legacy_only: true
+    description: "wg-mesh public key for gekko-hetzner-4"
+  # DECOMMISSIONED: mentolder-standalone Proxmox home-LAN workers (wg-mesh 192.168.100.20-22, port 51821)
+  # k3s-1/2/3 VMs decommissioned 2026-05-31 — keys retained for potential reuse of Proxmox hosts.
+  - name: WG_MESH_K3S1_PRIVATE_KEY
+    required: false
+    sealed: true
+    legacy_only: true
+    description: "DECOMMISSIONED — wg-mesh private key for k3s-1 (Proxmox vmid=100, wg_ip 192.168.100.20)"
+  - name: WG_MESH_K3S1_PUBLIC_KEY
+    required: false
+    legacy_only: true
+    description: "DECOMMISSIONED — wg-mesh public key for k3s-1"
+  - name: WG_MESH_K3S2_PRIVATE_KEY
+    required: false
+    sealed: true
+    legacy_only: true
+    description: "wg-mesh private key for k3s-2 (Proxmox vmid=200, wg_ip 192.168.100.21)"
+  - name: WG_MESH_K3S2_PUBLIC_KEY
+    required: false
+    legacy_only: true
+    description: "wg-mesh public key for k3s-2"
+  - name: WG_MESH_K3S3_PRIVATE_KEY
+    required: false
+    sealed: true
+    legacy_only: true
+    description: "wg-mesh private key for k3s-3 (Proxmox vmid=300, wg_ip 192.168.100.22)"
+  - name: WG_MESH_K3S3_PUBLIC_KEY
+    required: false
+    legacy_only: true
+    description: "wg-mesh public key for k3s-3"
+  # korczewski cluster
+  - name: WG_MESH_PK4_PRIVATE_KEY
+    required: false
+    sealed: true
+    description: "wg-mesh private key for pk-hetzner-4"
+  - name: WG_MESH_PK4_PUBLIC_KEY
+    required: false
+    description: "wg-mesh public key for pk-hetzner-4"
+  - name: WG_MESH_PK6_PRIVATE_KEY
+    required: false
+    sealed: true
+    description: "wg-mesh private key for pk-hetzner-6"
+  - name: WG_MESH_PK6_PUBLIC_KEY
+    required: false
+    description: "wg-mesh public key for pk-hetzner-6"
+  - name: WG_MESH_PK8_PRIVATE_KEY
+    required: false
+    sealed: true
+    description: "wg-mesh private key for pk-hetzner-8"
+  - name: WG_MESH_PK8_PUBLIC_KEY
+    required: false
+    description: "wg-mesh public key for pk-hetzner-8"
+  - name: WG_MESH_PK_L1_WORKER_PRIVATE_KEY
+    required: false
+    sealed: true
+    description: "wg-mesh private key for korczewski l1 worker node"
+  - name: WG_MESH_PK_L1_WORKER_PUBLIC_KEY
+    required: false
+    description: "wg-mesh public key for korczewski l1 worker node"
+  # terminal-sidekick — WSL host (ttyd). Keypair generated on host via `scripts/terminal-sidekick-host.sh`.
+  - name: WG_MESH_TERMINAL_PRIVATE_KEY
+    required: false
+    sealed: true
+    description: "wg-mesh private key for the WSL host running ttyd (terminal-sidekick, T001565)"
+  - name: WG_MESH_TERMINAL_PUBLIC_KEY
+    required: false
+    description: "wg-mesh public key for the WSL host running ttyd (terminal-sidekick, T001565)"
+  # Laptops/Tablet (T006143) — pk-l-1 (Laptop, bge-Embedding) und pk-tablet (bge-Rerank).
+  # Home-NAT-Geraete, wg_ips 192.168.100.11/.12, Keepalive 25 (vgl. wsl2-gpu-mentolder).
+  # T012414: legacy_only, weil es die Lage beschreibt — nicht, um einen Guard
+  # ruhigzustellen. Belege vom 2026-08-18:
+  #   kubectl --context fleet -n workspace get secret workspace-secrets -o json
+  # listet 17 WG_MESH-Schluessel (GEKKO2/3/4, K3S1/2/3, PK4/6/8, WSL2_GPU) —
+  # PKL1 und PKT sind NICHT darunter, die Fleet laeuft ohne sie. Die Klartext-
+  # Werte existieren zudem in keiner Repo-Datei mehr (weder
+  # environments/.secrets/mentolder.yaml noch fleet-mentolder.yaml kennen die
+  # Namen); im gesiegelten Legacy-File liegt nur noch verwaister Chiffretext.
+  # Sie in fleet-mentolder nachzusiegeln waere daher keine Ergaenzung, sondern
+  # eine Neuerzeugung der Schluesselpaare samt Ausrollen auf Laptop und Tablet.
+  #
+  # Warum es so lange unbemerkt blieb (T012415): bis zur Umstellung der PR-Jobs
+  # auf den self-hosted Runner fehlte dort `yq` — der Guard in
+  # tests/py/spec/test_fleet_operations.py hat sich uebersprungen, statt zu pruefen.
+  - name: WG_MESH_PKL1_PRIVATE_KEY
+    required: false
+    sealed: true
+    legacy_only: true
+    description: "wg-mesh private key for pk-l-1 (Laptop, bge-Embedding)"
+  - name: WG_MESH_PKL1_PUBLIC_KEY
+    required: false
+    legacy_only: true
+    description: "wg-mesh public key for pk-l-1 (Laptop, bge-Embedding)"
+  - name: WG_MESH_PKT_PRIVATE_KEY
+    required: false
+    sealed: true
+    legacy_only: true
+    description: "wg-mesh private key for pk-tablet (bge-Rerank)"
+  - name: WG_MESH_PKT_PUBLIC_KEY
+    required: false
+    legacy_only: true
+    description: "wg-mesh public key for pk-tablet (bge-Rerank)"
+
+  # ── Proxmox hypervisor SSH keys ─────────────────────────────────────────────
+  # Root SSH keys for the three Proxmox host nodes. Private keys are sealed;
+  # public keys are plain. Used for VM management and console access.
+  - name: PVE_SSH_PRIVATE_KEY
+    required: false
+    sealed: true
+    description: "SSH private key for root@pvemain (10.0.0.7) — Proxmox node 1 (previously hosted k3s-1, DECOMMISSIONED 2026-05-31)"
+  - name: PVE_SSH_PUBLIC_KEY
+    required: false
+    description: "SSH public key for root@pvemain"
+  - name: PVE2_SSH_PRIVATE_KEY
+    required: false
+    sealed: true
+    description: "SSH private key for root@pve2 — Proxmox node 2 (dev2, 10.0.0.9, dev Proxmox cluster)"
+  - name: PVE2_SSH_PUBLIC_KEY
+    required: false
+    description: "SSH public key for root@pve2"
+  - name: PVE3_SSH_PRIVATE_KEY
+    required: false
+    sealed: true
+    description: "SSH private key for root@pve3 — Proxmox node 3 (hosts devc-3 at 10.0.0.23)"
+  - name: PVE3_SSH_PUBLIC_KEY
+    required: false
+    description: "SSH public key for root@pve3"
+
+  # ── SSH identity keys ────────────────────────────────────────────────────────
+  # One entry per permanent user identity. Private keys are sealed;
+  # public keys are plain. Allows cluster workloads / CronJobs to SSH into
+  # nodes as the correct OS user without embedding keys in images.
+  - name: PATRICK_SSH_PRIVATE_KEY
+    required: false
+    sealed: true
+    description: "SSH private key (OpenSSH ed25519) for user patrick"
+  - name: PATRICK_SSH_PUBLIC_KEY
+    required: false
+    description: "SSH public key (OpenSSH ed25519) for user patrick"
+  - name: GEKKO_SSH_PRIVATE_KEY
+    required: false
+    sealed: true
+    description: "SSH private key (OpenSSH ed25519) for user gekko"
+  - name: GEKKO_SSH_PUBLIC_KEY
+    required: false
+    description: "SSH public key (OpenSSH ed25519) for user gekko"
+
+  # ── HA dev cluster (devc) ────────────────────────────────────────────────────
+  - name: DEVC_VIP
+    required: false
+    description: "Floating VIP for the 3-node HA dev k3s cluster (kube-vip ARP)"
+  - name: DEVC_NODE_IPS
+    required: false
+    description: "Comma-separated IPs of the devc k3s nodes (devc-1/2/3)"
+  - name: PVE_HOSTS
+    required: false
+    description: "Comma-separated IPs of the Proxmox cluster hosts"

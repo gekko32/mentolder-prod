@@ -1,0 +1,126 @@
+# ═══════════════════════════════════════════════════════════════════
+# Brett — 3D systemic-board pod. Static HTML + REST + WebSocket sync.
+# Persists to shared-db (website DB). Single replica by design (in-memory
+# rooms map). See docs/superpowers/specs/2026-04-25-systemisches-brett-design.md
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brett
+  labels:
+    app: brett
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: brett
+  template:
+    metadata:
+      labels:
+        app: brett
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      containers:
+        - name: brett
+          image: ghcr.io/paddione/workspace-brett:${BRETT_IMAGE}
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: PORT
+              value: "3000"
+            - name: WEBSITE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: WEBSITE_DB_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql://website:$(WEBSITE_DB_PASSWORD)@shared-db:5432/website?sslmode=disable"
+            - name: POCKET_ID_URL
+              value: "${POCKET_ID_URL}"
+            - name: POCKET_ID_FRONTEND_URL
+              value: "${POCKET_ID_FRONTEND_URL}"
+            - name: BRETT_CLIENT_ID
+              value: "brett"
+            - name: BRETT_OIDC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: POCKET_ID_BRETT_SECRET
+            - name: BRETT_PUBLIC_URL
+              value: "https://brett.localhost"
+            - name: WEBSITE_INTERNAL_URL
+              value: "http://website.${WEBSITE_NAMESPACE}.svc.cluster.local:4321"
+            - name: INTERNAL_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: INTERNAL_API_TOKEN
+            - name: NODE_ENV
+              value: "production"
+            - name: BRETT_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: BRETT_OIDC_SECRET
+            - name: BRETT_PRESETS_PATH
+              value: /app/presets/presets.json
+            - name: BRETT_BRAND
+              value: "mentolder"
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet: { path: /healthz, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 3000 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: "100m"
+            limits:
+              memory: 512Mi
+              cpu: "500m"
+          volumeMounts:
+            - name: presets-data
+              mountPath: /app/presets
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: presets-data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: brett
+  labels:
+    app: brett
+spec:
+  selector:
+    app: brett
+  ports:
+    - port: 3000
+      targetPort: 3000

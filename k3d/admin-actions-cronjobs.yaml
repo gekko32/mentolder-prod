@@ -1,0 +1,142 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: admin-actions-cleanup
+  namespace: workspace
+  labels:
+    app: cronjobs
+spec:
+  schedule: "*/30 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: psql
+              image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "128Mi"
+              env:
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: workspace-secrets, key: WEBSITE_DB_PASSWORD } }
+                - name: PGHOST
+                  value: shared-db
+                - name: PGUSER
+                  value: website
+                - name: PGDATABASE
+                  value: website
+              command:
+                - sh
+                - -c
+                - |
+                  until pg_isready -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -q; do sleep 1; done
+                  psql -v ON_ERROR_STOP=1 -c "
+                    UPDATE public.admin_actions
+                    SET status = 'failed',
+                        error = 'Timeout — Aktion wurde nicht abgeschlossen',
+                        completed_at = now()
+                    WHERE status = 'in_progress'
+                      AND created_at < now() - interval '30 minutes';
+                  "
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: admin-actions-prune
+  namespace: workspace
+  labels:
+    app: cronjobs
+spec:
+  schedule: "0 4 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: psql
+              image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "128Mi"
+              env:
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: workspace-secrets, key: WEBSITE_DB_PASSWORD } }
+                - name: PGHOST
+                  value: shared-db
+                - name: PGUSER
+                  value: website
+                - name: PGDATABASE
+                  value: website
+              command:
+                - sh
+                - -c
+                - |
+                  until pg_isready -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -q; do sleep 1; done
+                  psql -v ON_ERROR_STOP=1 -c "
+                    DELETE FROM public.admin_actions
+                    WHERE created_at < now() - interval '90 days';
+                  "
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sessions-purge
+  namespace: workspace
+  labels:
+    app: cronjobs
+spec:
+  schedule: "0 4 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: sessions-purge
+              image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "128Mi"
+              env:
+                - name: SESSIONS_CRON_TOKEN
+                  valueFrom: { secretKeyRef: { name: workspace-secrets, key: SESSIONS_CRON_TOKEN } }
+                - name: WEBSITE_NAMESPACE
+                  value: "${WEBSITE_NAMESPACE}"
+              command:
+                - sh
+                - -c
+                - |
+                  set -e
+                  echo "sessions-purge: starting at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  curl -fsS -X POST \
+                    "http://website.${WEBSITE_NAMESPACE}.svc.cluster.local:80/api/admin/sessions/purge" \
+                    -H "X-Cron-Token: $SESSIONS_CRON_TOKEN" \
+                    --max-time 30
+                  echo "sessions-purge: done"

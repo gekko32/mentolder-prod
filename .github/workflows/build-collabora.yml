@@ -1,0 +1,79 @@
+name: Build Collabora (setcap)
+# Duenne Schicht ueber collabora/code, die /usr/bin/coolwsd File-Capabilities gibt.
+# Veroeffentlicht ghcr.io/gekko32/collabora-code:<upstream>-setcap und :latest.
+# render.yml loest den Digest von :latest auf und pinnt ihn im Artefakt.
+on:
+  push:
+    branches: [main]
+    paths:
+      - docker/collabora/Dockerfile
+      - .github/workflows/build-collabora.yml
+  pull_request:
+    paths:
+      - docker/collabora/Dockerfile
+      - .github/workflows/build-collabora.yml
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Upstream-Tag von collabora/code (leer = ARG UPSTREAM_TAG im Dockerfile)"
+        required: false
+        default: ""
+
+concurrency:
+  group: build-collabora-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: false
+
+      - name: Resolve upstream tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          TAG="${INPUT_TAG:-}"
+          if [[ -z "$TAG" ]]; then
+            TAG=$(grep -E '^ARG UPSTREAM_TAG=' docker/collabora/Dockerfile | cut -d= -f2)
+          fi
+          [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "ungueltiger Tag: $TAG" >&2; exit 1; }
+          echo "upstream=$TAG" >> "$GITHUB_OUTPUT"
+          echo "published=${TAG}-setcap" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/collabora
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          build-args: |
+            UPSTREAM_TAG=${{ steps.tag.outputs.upstream }}
+          tags: |
+            ghcr.io/gekko32/collabora-code:${{ steps.tag.outputs.published }}
+            ghcr.io/gekko32/collabora-code:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Collabora CODE with file-capabilities on coolwsd
+            org.opencontainers.image.licenses=MPL-2.0
+          cache-from: type=gha,scope=collabora
+          cache-to: type=gha,mode=min,scope=collabora

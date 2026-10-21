@@ -1,0 +1,17 @@
+# Controller, die der Render voraussetzt (CRDs fuer ClusterIssuer/Certificate).
+# platform wartet darauf (dependsOn).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infra-controllers
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 2m
+  timeout: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./flux/infra
+  prune: true
+  wait: true

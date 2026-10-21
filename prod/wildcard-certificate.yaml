@@ -1,0 +1,15 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: workspace-wildcard
+  namespace: workspace
+# TLS-Secret-Kopien (website, coturn, workspace-office) pflegt der tls-sync
+# CronJob (prod/reflector.yaml) — kein Reflector-Controller im Cluster.
+spec:
+  secretName: ${TLS_SECRET_NAME}
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - "*.${PROD_DOMAIN}"
+    - "${PROD_DOMAIN}"

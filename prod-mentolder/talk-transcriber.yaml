@@ -35,7 +35,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: transcriber
-          image: ghcr.io/paddione/talk-transcriber@sha256:350022ca23271d0df6b5a0c33a7fb7a2947c6b195e3bdb6ac6a4b0124e932f0c
+          image: ghcr.io/gekko32/talk-transcriber:latest
           imagePullPolicy: IfNotPresent
           env:
             - name: NC_DOMAIN

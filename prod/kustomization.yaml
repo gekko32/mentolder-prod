@@ -1,0 +1,189 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: workspace
+
+# Base kustomization (all deployments, services, PVCs from k3d/)
+resources:
+  - ../k3d
+  # Production-only (no equivalent in base)
+  - rustdesk-web-bridge.yaml
+  - comfy-gpu.yaml
+  - rigger-gpu.yaml
+  - cluster-issuer.yaml
+  - reflector.yaml
+  - wildcard-certificate.yaml
+  - ingressclass.yaml
+  - traefik-middlewares.yaml
+  - tlsoption.yaml
+  - old-webspace.yaml
+  - ingress.yaml
+  - traefik-dashboard.yaml
+  - mail-ingressroute.yaml
+
+# Production ConfigMaps (override base OIDC config)
+configMapGenerator:
+  - name: nextcloud-oidc-config
+    behavior: replace
+    files:
+      - oidc.config.php=nextcloud-oidc-prod.php
+generatorOptions:
+  disableNameSuffixHash: true
+
+# Strategic merge patches
+patches:
+  # Drop the dev-placeholder workspace-secrets Secret from prod output.
+  # In production, workspace-secrets is managed exclusively by SealedSecrets
+  # (environments/sealed-secrets/<env>.yaml). Applying the dev values from
+  # k3d/secrets.yaml would overwrite the real secrets on every deploy.
+  - target:
+      kind: Secret
+      name: workspace-secrets
+    patch: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: workspace-secrets
+      $patch: delete
+  # Drop dev-placeholder knowledge-secrets.
+  - target:
+      kind: Secret
+      name: knowledge-secrets
+    patch: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: knowledge-secrets
+      $patch: delete
+  # Drop dev-placeholder backup-passphrase — in production this secret is
+  # managed via SealedSecrets (never overwritten by workspace:deploy).
+  - target:
+      kind: Secret
+      name: backup-passphrase
+    patch: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: backup-passphrase
+      $patch: delete
+  # Drop dev-placeholder vaultwarden-seed-credentials — the file lives in k3d/
+  # as an operator template (BW_PASSWORD: CHANGE_ME_AFTER_FIRST_LOGIN). It is
+  # not currently referenced by k3d/kustomization.yaml, but this $patch: delete
+  # entry is defensive: if the file is ever added to the base, the prod overlay
+  # will still strip it so `kubectl apply -k prod-*` cannot overwrite the real
+  # admin credentials set on the cluster after first login.
+  - target:
+      kind: Secret
+      name: vaultwarden-seed-credentials
+    patch: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: vaultwarden-seed-credentials
+      $patch: delete
+  # Drop dev-placeholder ntfy-tokens — in production this secret is
+  # managed via SealedSecrets.
+  - target:
+      kind: Secret
+      name: ntfy-tokens
+    patch: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: ntfy-tokens
+      $patch: delete
+  # Drop the k3d-only apiserver egress policy from prod output — the prod
+  # apiserver endpoints live in the fleet-wg range covered by the base policy.
+  - target:
+      kind: NetworkPolicy
+      name: allow-apiserver-egress-k3d
+    patch: |-
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-apiserver-egress-k3d
+        namespace: workspace
+      $patch: delete
+  # Drop k3d-only localhost ingresses — production uses per-service ingresses
+  # in prod/ingress.yaml with real domains and TLS.
+  - target:
+      kind: Ingress
+      name: workspace-ingress
+    patch: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: workspace-ingress
+      $patch: delete
+  - target:
+      kind: Ingress
+      name: workspace-ingress-internal
+    patch: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: workspace-ingress-internal
+      $patch: delete
+  # Delete base Ingress so only the brand-overlay variant survives envsubst.
+  # Without this, both k3d/penpot-ingress.yaml and prod-fleet/<brand>/penpot-ingress-route.yaml
+  # emit the same resource id (workspace-ingress-penpot) after Flux envsubst → whole Kustomization fails.
+  - target:
+      kind: Ingress
+      name: workspace-ingress-penpot
+    patch: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: workspace-ingress-penpot
+      $patch: delete
+  - target:
+      kind: Ingress
+      name: bachelorprojekt
+    patch: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: bachelorprojekt
+      $patch: delete
+  # Override domains
+  - path: configmap-domains.yaml
+  # Override ingress (add TLS + real hostnames)
+  - path: ingress.yaml
+  - path: patch-nextcloud.yaml
+  # Production SMTP and service config
+  - path: patch-vaultwarden.yaml
+  - path: patch-oauth2-proxy-terminal.yaml
+  - path: patch-oauth2-proxy-downloads-deployment.yaml
+  - path: patch-oauth2-proxy-traefik-deployment.yaml
+  - path: patch-oauth2-proxy-mailpit-deployment.yaml
+  - path: patch-oauth2-proxy-brett-deployment.yaml
+  - path: patch-oauth2-proxy-videovault-deployment.yaml
+  - path: patch-oauth2-proxy-rustdesk-web-deployment.yaml
+  - path: patch-oauth2-proxy-studio-deployment.yaml
+  - path: patch-oauth2-proxy-mediaviewer-deployment.yaml
+  - path: patch-brett.yaml
+  - path: patch-oauth2-proxy-comfy-deployment.yaml
+  # Collabora lives in the workspace-office namespace, deployed via
+  # task workspace:office:deploy — no patch target on this overlay.
+  # Reduce shared-db resource requests for smaller production clusters
+  - path: patch-shared-db.yaml
+  # Override signaling backend URL for production (HTTPS + real domain)
+  - path: patch-signaling-backend.yaml
+  # Traefik dashboard redirect-root uses http:// in dev; patch to https:// for prod
+  - target:
+      kind: Middleware
+      name: traefik-dashboard-redirect-root
+    patch: |
+      apiVersion: traefik.io/v1alpha1
+      kind: Middleware
+      metadata:
+        name: traefik-dashboard-redirect-root
+        namespace: workspace
+      spec:
+        redirectRegex:
+          regex: "^https://([^/]+)/?$"
+          replacement: "https://$1/dashboard/"
+          permanent: false
+  # Pocket ID prod overlay (T001068 Welle 0): websecure + TLS + resource limits.
+  # The PVC is now in the base (k3d/pocket-id.yaml) — k3d's local-path provisioner
+  # also serves dev. This keeps the strategic-merge patch single-purpose.
+  - path: patch-pocket-id.yaml

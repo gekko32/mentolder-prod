@@ -37,7 +37,7 @@ env_vars:
   WEBSITE_DB_NAMESPACE: workspace
   WEBSITE_DB_NAME: website
   WEBSITE_DB_USER: website
-  WEBSITE_NODE_AFFINITY: '["pk-hetzner-4","pk-hetzner-6","pk-hetzner-8"]'
+  WEBSITE_NODE_AFFINITY: '["gekko-hetzner-2","gekko-hetzner-3","gekko-hetzner-4"]'
   INFRA_NAMESPACE: mentolder-infra
   TLS_SECRET_NAME: workspace-wildcard-tls
   SMTP_FROM: mentolder@mailbox.org
@@ -46,8 +46,8 @@ env_vars:
   SMTP_PORT: "587"
   SMTP_SECURE: "false"
   PRIMARY_FRONTEND: astro
-  # TURN_OVERLAY_IP: pk-hetzner-4 overlay IP (wg-fleet, same fleet mesh as gekko-4)
-  TURN_OVERLAY_IP: "10.20.0.1"
+  # TURN_OVERLAY_IP: private IP von gekko-hetzner-2 (TURN_NODE), Hetzner-Netz 192.168.200.0/24 (vgl. Bachelorprojekt #6709)
+  TURN_OVERLAY_IP: "192.168.200.2"
   # T016529: coturn/Janus laufen auf gekko-hetzner-2 (hostNetwork, ohne WG).
   # TURN_PUBLIC_IP ist die oeffentliche IP von gekko-hetzner-2 — zugleich
   # external-ip/nat_1_1_mapping der Manifeste prod-fleet/coturn.
@@ -55,14 +55,12 @@ env_vars:
   TURN_NODE: "gekko-hetzner-2"
   NEXTCLOUD_EXTERNAL_URL: "https://files.mentolder.de"
   AUTH_EXTERNAL_URL: "https://auth.mentolder.de"
-  BRAIN_EXTERNAL_URL: "https://brain.mentolder.de"
+  BRAIN_EXTERNAL_URL: ""
   WHITEBOARD_EXTERNAL_URL: "https://files.mentolder.de/apps/files"
   TRAEFIK_EXTERNAL_URL: "https://traefik.mentolder.de"
   MAIL_EXTERNAL_URL: "https://mail.mentolder.de"
   BRETT_DOMAIN: brett.mentolder.de
   MEDIAVIEWER_HOST: mediaviewer.mentolder.de
-  # Session-Subdomain für session-<slug>.<SESSIONS_DOMAIN> [T016251].
-  SESSIONS_DOMAIN: sessions.mentolder.de
   VIDEOVAULT_DOMAIN: videovault.mentolder.de
   OTEL_DOMAIN: otel.mentolder.de
   RECOVER_DOMAIN: recover.mentolder.de
@@ -77,15 +75,15 @@ env_vars:
   # Entwicklungswerkzeuge (ComfyUI, Web-Terminal, GPU-Host) laufen nicht in Prod;
   # leeres COMFY_HOST_IP schaltet die 3D-Generierung ab (503).
   TERMINAL_OVERLAY_IP: "10.20.0.10"
-  LLM_ENABLED: "true"
+  LLM_ENABLED: "false"
   LLM_RERANK_ENABLED: "false"
   # In-Cluster-bge (replicas 0 bis zur Aktivierung, siehe docs/runbooks/ai-services-scale-zero.md).
   LLM_RERANKER_URL: "http://llm-gateway-rerank.workspace.svc.cluster.local:8081"
   LLM_EMBED_URL: "http://llm-gateway-embed.workspace.svc.cluster.local:8081"
 
   STUDIO_DOMAIN: studio.mentolder.de
-  STUDIO_IMAGE: ghcr.io/paddione/studio-server
-  STUDIO_IMAGE_DIGEST: sha256:3fb082d01ee1679ccbe75831e7badc66f51fae8995afa5283da03eb4d349e7f3
+  STUDIO_IMAGE: ghcr.io/gekko32/studio-server
+  STUDIO_IMAGE_DIGEST: sha256:3333333333333333333333333333333333333333333333333333333333333333
   # Dev stack intentionally omitted — dev migration is Phase 2c.
   DEV_SSH_ALLOWLIST: ""
   EMAIL_NOTIFICATIONS_ENABLED: "false"
@@ -99,11 +97,11 @@ website_namespace: website
 secrets_ref: sealed-secrets/fleet-mentolder.yaml
 
 setup_vars:
-  KC_USER1_USERNAME: paddione
-  KC_USER1_EMAIL: patrick@korczewski.de
+  KC_USER1_USERNAME: gekko
+  KC_USER1_EMAIL: quamain@web.de
   KC_USER1_PASSWORD: SEALED
-  KC_USER2_USERNAME: gekko
-  KC_USER2_EMAIL: quamain@web.de
+  KC_USER2_USERNAME: paddione
+  KC_USER2_EMAIL: patrick@korczewski.de
   KC_USER2_PASSWORD: SEALED
   # wg-mesh fleet CP keys — private keys sealed in .secrets/fleet-mentolder.yaml
   WG_MESH_PK4_PRIVATE_KEY: SEALED

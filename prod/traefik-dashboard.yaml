@@ -1,0 +1,38 @@
+# ═══════════════════════════════════════════════════════════════════
+# Traefik Dashboard (api@internal) — OIDC-protected via oauth2-proxy
+# Middlewares (traefik-dashboard-auth, traefik-dashboard-errors,
+# traefik-dashboard-redirect-root) are defined in k3d/traefik-dashboard-dev.yaml
+# and reused here. redirect-root is patched to https:// via kustomization.yaml.
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: traefik-dashboard
+  namespace: workspace
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    # oauth2-proxy endpoints (sign-in, callback, sign_out, auth) — no auth middleware
+    - match: Host(`traefik.${PROD_DOMAIN}`) && PathPrefix(`/oauth2`)
+      kind: Rule
+      middlewares:
+        - name: hsts-headers
+        - name: security-headers
+      services:
+        - name: oauth2-proxy-traefik
+          port: 4180
+    # Dashboard + API — require auth. Redirects bare `/` to `/dashboard/`.
+    - match: Host(`traefik.${PROD_DOMAIN}`)
+      kind: Rule
+      middlewares:
+        - name: hsts-headers
+        - name: security-headers
+        - name: traefik-dashboard-redirect-root
+        - name: traefik-dashboard-errors
+        - name: traefik-dashboard-auth
+      services:
+        - name: api@internal
+          kind: TraefikService
+  tls:
+    secretName: ${TLS_SECRET_NAME}

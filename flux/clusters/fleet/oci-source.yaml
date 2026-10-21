@@ -1,0 +1,17 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: mentolder-manifests
+  namespace: flux-system
+spec:
+  interval: 10m
+  url: oci://ghcr.io/gekko32/mentolder-manifests
+  ref:
+    tag: latest
+  # Das Paket ist oeffentlich, kein Lesegeheimnis noetig. Nur Artefakte, die
+  # render.yml auf main signiert hat (keyless cosign, GitHub OIDC).
+  verify:
+    provider: cosign
+    matchOIDCIdentity:
+      - issuer: ^https://token\.actions\.githubusercontent\.com$
+        subject: ^https://github\.com/gekko32/mentolder-prod/\.github/workflows/render\.yml@refs/heads/main$

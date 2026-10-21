@@ -1,0 +1,48 @@
+# Catch-all route for *.dev.${PROD_DOMAIN}. The explicit website-dev
+# and brett-dev Ingresses bind specific hostnames at default priority;
+# this IngressRoute at priority=1 catches any *other* subdomain and
+# forwards to sish, which routes by the SSH-requested name.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: sish-catchall
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: HostRegexp(`{subdomain:[a-z0-9-]+}.${DEV_DOMAIN}`)
+      priority: 1
+      kind: Rule
+      services:
+        - name: sish
+          port: 80
+    - match: Host(`brainstorm.${PROD_DOMAIN}`)
+      priority: 2
+      kind: Rule
+      services:
+        - name: sish
+          port: 80
+    - match: Host(`${DEV_DOMAIN}`)
+      priority: 3
+      kind: Rule
+      services:
+        - name: website
+          port: 80
+---
+# Direct TLS route for brainstorm.mentolder.de → sish (no oauth2-proxy gate;
+# the brainstorm app handles its own Keycloak auth session).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: brainstorm-tls
+spec:
+  entryPoints:
+    - websecure
+  tls: {}
+  routes:
+    - match: Host(`brainstorm.${PROD_DOMAIN}`)
+      kind: Rule
+      priority: 10
+      services:
+        - name: sish
+          port: 80

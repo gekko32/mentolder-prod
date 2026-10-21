@@ -42,7 +42,7 @@ Die Änderung betrifft ausschließlich Fleet-Mentolder. Devmesh bleibt unveränd
 der eingefrorene Korczewski-Workspace darf nicht aktiviert oder hochskaliert werden.
 
 Diese Produktionsschicht wird in `gekko32/mentolder-prod` geändert. Der bestehende
-`UPSTREAM_REF` bleibt für diese Umstellung unverändert. Rendering und Validierung
+Die Basen bleiben für diese Umstellung unverändert (siehe `VENDORED_FROM`). Rendering und Validierung
 müssen die hier gepinnten Upstream-Basen mit den Overlays dieses Repositories
 kombinieren, wie im Render-Workflow beschrieben.
 

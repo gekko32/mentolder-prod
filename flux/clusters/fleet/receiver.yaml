@@ -1,0 +1,17 @@
+# Webhook fuer sofortigen Reconcile nach einem Render (render.yml, Schritt
+# "Ping Flux receiver"). Geteiltes Geheimnis: flux-system/flux-webhook-token
+# (neu fuer mentolder erzeugt, Runbook 2.4). Ohne Repo-Secret FLUX_WEBHOOK_URL
+# greift Flux nach seinem 10-Minuten-Intervall.
+apiVersion: notification.toolkit.fluxcd.io/v1
+kind: Receiver
+metadata:
+  name: flux-webhook
+  namespace: flux-system
+spec:
+  type: generic
+  secretRef:
+    name: flux-webhook-token
+  resources:
+    - kind: OCIRepository
+      name: mentolder-manifests
+      namespace: flux-system

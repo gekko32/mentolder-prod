@@ -1,0 +1,123 @@
+# Runbook 3.4: Workloads aus dem signierten Artefakt ghcr.io/gekko32/mentolder-manifests.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: platform
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 2m
+  timeout: 5m
+  dependsOn:
+    - name: mentolder-secrets
+    - name: infra-controllers
+  sourceRef:
+    kind: OCIRepository
+    name: mentolder-manifests
+  path: ./platform
+  prune: true
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: coturn
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 2m
+  timeout: 5m
+  dependsOn:
+    - name: mentolder-secrets
+    - name: platform
+  sourceRef:
+    kind: OCIRepository
+    name: mentolder-manifests
+  path: ./coturn
+  prune: true
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: office
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 2m
+  timeout: 5m
+  dependsOn:
+    - name: mentolder-secrets
+    - name: platform
+  sourceRef:
+    kind: OCIRepository
+    name: mentolder-manifests
+  path: ./office
+  prune: true
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: rustdesk
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 2m
+  timeout: 5m
+  dependsOn:
+    - name: mentolder-secrets
+    - name: platform
+  sourceRef:
+    kind: OCIRepository
+    name: mentolder-manifests
+  path: ./rustdesk
+  prune: true
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: mentolder-prod
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 2m
+  timeout: 10m
+  dependsOn:
+    - name: mentolder-secrets
+    - name: platform
+  sourceRef:
+    kind: OCIRepository
+    name: mentolder-manifests
+  path: ./mentolder
+  prune: true
+  # Nur Workloads, die diese Kustomization selbst ausrollt.
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: shared-db
+      namespace: workspace
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: pocket-id
+      namespace: workspace
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: mentolder-prod-website
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 2m
+  timeout: 5m
+  dependsOn:
+    - name: mentolder-secrets
+    - name: platform
+  sourceRef:
+    kind: OCIRepository
+    name: mentolder-manifests
+  path: ./website-mentolder
+  prune: true
+  wait: true

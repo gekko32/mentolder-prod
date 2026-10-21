@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: domain-config
+data:
+  # Pocket ID is the auth provider — auth.${PROD_DOMAIN} (was Keycloak's slot)
+  # KC_DOMAIN points to the auth provider (Pocket ID, was Keycloak)
+  KC_DOMAIN: "auth.${PROD_DOMAIN}"
+  POCKET_ID_DOMAIN: "auth.${PROD_DOMAIN}"
+  NC_DOMAIN: "files.${PROD_DOMAIN}"
+  MEET_DOMAIN: "files.${PROD_DOMAIN}/index.php/apps/spreed/"
+  COLLABORA_DOMAIN: "office.${PROD_DOMAIN}"
+  SIGNALING_DOMAIN: "signaling.${PROD_DOMAIN}"
+  VAULT_DOMAIN: "vault.${PROD_DOMAIN}"
+  MAIL_DOMAIN: "mail.${PROD_DOMAIN}"
+  DOWNLOADS_DOMAIN: "downloads.${PROD_DOMAIN}"
+  WEB_DOMAIN: "web.${PROD_DOMAIN}"
+  REMOTE_DOMAIN: "remote.${PROD_DOMAIN}"
+  WHITEBOARD_DOMAIN: "board.${PROD_DOMAIN}"
+  TRAEFIK_DOMAIN: "traefik.${PROD_DOMAIN}"
+  BRETT_DOMAIN: "brett.${PROD_DOMAIN}"
+  # Mediaviewer host (mediaviewer.<domain>). MUST be set here for the same reason
+  # as RECOVER_DOMAIN below: this file is a strategic-merge patch over base
+  # k3d/configmap-domains.yaml, so without it the live domain-config keeps the dev
+  # value `mediaviewer.localhost`. domain-config is the runtime SSOT the website
+  # reads (configMapKeyRef → PortalLayout SSR → PortalSidekick/MediaviewerPanel),
+  # so the dev value makes the Sidekick mediaviewer iframe load mediaviewer.localhost
+  # and its postMessage target origin mismatch the live origin on every deploy.
+  MEDIAVIEWER_HOST: "mediaviewer.${PROD_DOMAIN}"
+  # Agentic Terminal host — registry-sourced (terminal.<domain>). Same reason as
+  # MEDIAVIEWER_HOST: this file strategic-merge-patches base k3d/configmap-domains.yaml.
+  TERMINAL_HOST: "terminal.${PROD_DOMAIN}"
+  # Recovery filebrowser host — registry-sourced (recover.<domain>). MUST be set
+  # here: this file is a strategic-merge patch over base k3d/configmap-domains.yaml,
+  # so without it the live domain-config keeps the dev value `recover.localhost`,
+  # silently breaking the recovery oauth2-proxy redirect + realm client + browse
+  # ingress on every deploy. domain-config is the runtime SSOT for those. [T000398]
+  RECOVER_DOMAIN: "${RECOVER_DOMAIN}"
+  # Env-registry values (substituted from environments/<env>.yaml at deploy time)
+  PROD_DOMAIN: "${PROD_DOMAIN}"
+  WEBSITE_IMAGE: "${WEBSITE_IMAGE}"
+  INFRA_NAMESPACE: "${INFRA_NAMESPACE}"
+  TLS_SECRET_NAME: "${TLS_SECRET_NAME}"
+  TURN_PUBLIC_IP: "${TURN_PUBLIC_IP}"
+  TURN_NODE: "${TURN_NODE}"
+  KC_USER1_USERNAME: "${KC_USER1_USERNAME}"
+  KC_USER1_EMAIL: "${KC_USER1_EMAIL}"
+  KC_USER2_USERNAME: "${KC_USER2_USERNAME}"
+  KC_USER2_EMAIL: "${KC_USER2_EMAIL}"
+  # Dev-stack — empty when no dev stack is configured for this env
+  DEV_DOMAIN: "${DEV_DOMAIN}"
