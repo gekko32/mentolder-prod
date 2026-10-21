@@ -27,6 +27,6 @@ for a in "$B"/*.tar.zst.age; do
   n=$(age -d -i "$PLAIN/mentolder.agekey" "$a" | zstd -dc | tar -tf - | wc -l)
   printf '%-55s %6s Eintraege\n' "$(basename "$a")" "$n"; [ "$n" -gt 0 ] || fail=1
 done
-age -d -i "$PLAIN/mentolder.agekey" "$B/workspace__nextcloud-app.tar.zst.age" | zstd -dc | tar -tf - | grep -qx './config/config.php' \
+age -d -i "$PLAIN/mentolder.agekey" "$B/workspace__nextcloud-app.tar.zst.age" | zstd -dc | tar -tf - | grep -cx './config/config.php' >/dev/null \
   && echo "nextcloud-app: config/config.php vorhanden" || { echo "nextcloud-app: config.php FEHLT"; fail=1; }
 [ $fail -eq 0 ] && echo "PROBE OK" || { echo "PROBE FEHLGESCHLAGEN"; exit 1; }
