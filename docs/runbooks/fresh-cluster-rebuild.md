@@ -35,6 +35,17 @@ Stand der Ist-Aufnahme: 2026-10-20 (siehe [Anhang A](#anhang-a-ist-aufnahme-2026
   (`Start-Process -WindowStyle Hidden wsl.exe -ArgumentList '-d','gekko-ops','--','sleep','infinity'`)
   und die Handover-Datei bis Phase 8 zusätzlich age-verschlüsselt ablegen
   (`age -p -o ~/mentolder-ops/handover.json.age "$PLAIN/handover.json"`).
+- **Variablen überleben keinen Aufruf.** Jeder `wsl.exe … bash -l -s`-Aufruf ist
+  eine neue Shell. `$PLAIN`, `$B`, `$R`, `KUBECONFIG` und die Zugänge aus 2.0
+  kommen deshalb aus `~/mentolder-ops/env.sh` (angelegt in 0.9, über
+  `~/.profile` in jeder Login-Shell geladen). Werte, die später gebraucht
+  werden, dort bzw. in den Zeigerdateien daneben ablegen, nicht nur exportieren.
+- **Eingaben mit Passphrase oder Token** (`age -p`, `age -d` einer `.json.age`,
+  GHCR-Token in 6.1, `bw login`/`bw unlock` in 8.1) brauchen ein Terminal. Über
+  `wsl.exe … bash -s` gibt es keins. Diese Blöcke führt der Operator selbst in
+  einem eigenen Fenster aus (`wsl -d gekko-ops`), der Agent nennt den Befehl und
+  wartet. Ergebnisse landen in `$PLAIN` bzw. `~/mentolder-ops` und sind danach
+  für alle Aufrufe da.
 - **Linux-Befehle** laufen in der WSL-Instanz. Von der Windows-Seite aus:
 
   ```bash
@@ -161,10 +172,12 @@ Remove-Item $env:TEMP\noble.tar.gz
 ```powershell
 wsl -d gekko-ops -u root -- bash -c "id gekko 2>/dev/null || useradd -m -s /bin/bash -G sudo gekko; passwd -l gekko; echo 'gekko ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/90-gekko; chmod 440 /etc/sudoers.d/90-gekko; visudo -cf /etc/sudoers.d/90-gekko; printf '[boot]\nsystemd=true\n[user]\ndefault=gekko\n[interop]\nappendWindowsPath=false\n' > /etc/wsl.conf"
 wsl --terminate gekko-ops
-wsl -d gekko-ops -- bash -c "whoami; sudo -n true && echo sudo-ok; systemctl is-system-running || true"
+wsl -d gekko-ops -- bash -c "sudo loginctl enable-linger gekko; whoami; sudo -n true && echo sudo-ok; systemctl is-system-running || true; loginctl show-user gekko -p Linger"
 ```
 
-Erwartung: `gekko`, `sudo-ok`, `running` oder `degraded`.
+Erwartung: `gekko`, `sudo-ok`, `running` oder `degraded`, `Linger=yes`.
+Ohne Linger löscht systemd `/run/user/<uid>` (und damit `$PLAIN`), sobald die
+letzte Sitzung von `gekko` endet. Das passiert zwischen zwei `wsl.exe`-Aufrufen.
 `appendWindowsPath=false` verhindert, dass Windows-Binaries (`kubectl.exe`,
 `ssh.exe`) Linux-Werkzeuge überschatten.
 
@@ -285,6 +298,17 @@ sudo apt-get install -y git curl jq unzip zstd pv rsync age gnupg ca-certificate
   openssl postgresql-client python3 python3-yaml nodejs npm
 
 mkdir -p ~/.local/bin ~/mentolder-ops && cd ~/mentolder-ops
+# gemeinsame Umgebung fuer alle spaeteren Aufrufe (siehe Regeln)
+cat > ~/mentolder-ops/env.sh <<'X'
+export PATH="$HOME/.local/bin:$PATH"
+export PLAIN=/run/user/$(id -u)/mentolder-plain
+[ -f ~/mentolder-ops/backup.dir ] && export B=$(cat ~/mentolder-ops/backup.dir)
+[ -f ~/mentolder-ops/age.pub ] && export R=$(cat ~/mentolder-ops/age.pub)
+[ -f ~/mentolder-ops/kubeconfig.current ] && export KUBECONFIG=$(cat ~/mentolder-ops/kubeconfig.current)
+[ -f "$PLAIN/inputs.secret.env" ] && . "$PLAIN/inputs.secret.env"
+true
+X
+grep -q mentolder-ops/env.sh ~/.profile || echo '[ -f ~/mentolder-ops/env.sh ] && . ~/mentolder-ops/env.sh' >> ~/.profile
 gh_latest() { curl -fsSL "https://api.github.com/repos/$1/releases/latest" | jq -r .tag_name; }
 
 # kubectl (stabile Linie)
@@ -331,7 +355,7 @@ ssh gekko-hetzner-2/gekko 'sudo cat /etc/rancher/k3s/k3s.yaml' \
   | sed 's#https://127.0.0.1:6443#https://127.0.0.1:16443#' > ~/.kube/fleet-old
 chmod 600 ~/.kube/fleet-old
 ssh -f -N -o ExitOnForwardFailure=yes -L 16443:127.0.0.1:6443 gekko-hetzner-2/gekko
-export KUBECONFIG=~/.kube/fleet-old
+echo ~/.kube/fleet-old > ~/mentolder-ops/kubeconfig.current; . ~/mentolder-ops/env.sh
 kubectl get nodes -o wide
 ```
 
@@ -748,7 +772,9 @@ Danach laufen nur noch `shared-db` und die Plattform.
 ### 4.3 Datenbank (logisch, versionsunabhängig)
 
 ```bash
-B=~/mentolder-ops/backup/$(date +%F); mkdir -p "$B"; R=$(cat ~/mentolder-ops/age.pub)
+# Backup-Verzeichnis einmalig festlegen; 4.4 bis 6.5 nutzen es ueber env.sh, auch an Folgetagen
+[ -f ~/mentolder-ops/backup.dir ] || echo ~/mentolder-ops/backup/$(date +%F) > ~/mentolder-ops/backup.dir
+. ~/mentolder-ops/env.sh; mkdir -p "$B"; [ -n "$R" ] || { echo "age.pub fehlt (2.0)"; exit 1; }
 kubectl -n workspace exec deploy/shared-db -- sh -c 'pg_dumpall -U "${POSTGRES_USER:-postgres}" --clean --if-exists' \
   | zstd -T0 | tee >(sha256sum > "$B/db.sha256") | age -r "$R" > "$B/shared-db.sql.zst.age"
 kubectl -n workspace exec deploy/shared-db -- sh -c 'psql -U "${POSTGRES_USER:-postgres}" -Atc "select datname, pg_database_size(datname) from pg_database where not datistemplate"' > "$B/db-sizes.txt"
@@ -1002,7 +1028,7 @@ for spec in "gekko-hetzner-2 192.168.200.2 178.104.169.206 init" \
   ssh "$1/gekko" 'sudo k3s kubectl wait --for=condition=Ready node/$(hostname) --timeout=300s'
 done
 ssh gekko-hetzner-2/gekko 'sudo cat /etc/rancher/k3s/k3s.yaml' | sed 's#https://127.0.0.1:6443#https://gekko-hetzner-2:6443#' > ~/.kube/fleet
-chmod 600 ~/.kube/fleet; export KUBECONFIG=~/.kube/fleet
+chmod 600 ~/.kube/fleet; echo ~/.kube/fleet > ~/mentolder-ops/kubeconfig.current; . ~/mentolder-ops/env.sh
 kubectl get nodes -o wide
 ```
 
@@ -1046,11 +1072,35 @@ Namespaces anlegen und alle Secrets aus Phase 2 einspielen, **bevor** Flux die
 Workloads und Certificates anlegt. Vorher die Passwörter `KC_USER1`/`KC_USER2`
 tauschen (Block am Ende von [6.8](#68-restbezüge-zu-patrick-lösen)):
 
+Die GHCR-Pull-Secrets im Handover (`ghcr-pull-secret` in `workspace`, `website`,
+`workspace-office`, `ghcr-auth` in `flux-system`) laufen auf **Patricks**
+GitHub-Token. Vorher durch einen Token von `gekko32` ersetzen (klassischer PAT,
+nur Scope `read:packages`, auf github.com als `gekko32` anlegen). Gebraucht wird
+er nur für das private `downloads-content`, die Deployments verweisen aber in
+allen drei Namespaces auf das Secret:
+
 ```bash
-for f in "$PLAIN"/secrets/*.json; do jq -r .metadata.namespace "$f"; done | sort -u | xargs -n1 -I{} kubectl create namespace {} --dry-run=client -o yaml | kubectl apply -f -
-for f in "$PLAIN"/secrets/*.json; do kubectl apply --server-side --field-manager=bootstrap -f "$f"; done
-kubectl create secret generic sops-age -n flux-system --from-file=age.agekey="$PLAIN/mentolder.agekey"
+read -rsp 'GHCR-Token von gekko32 (read:packages): ' GHCR_TOKEN < /dev/tty; echo
+for ns in workspace website workspace-office; do
+  kubectl create secret docker-registry ghcr-pull-secret -n "$ns" --docker-server=ghcr.io \
+    --docker-username=gekko32 --docker-password="$GHCR_TOKEN" --dry-run=client -o json > "$PLAIN/secrets/${ns}__ghcr-pull-secret.json"
+done
+rm -f "$PLAIN/secrets/flux-system__ghcr-auth.json"   # OCI-Artefakt ist oeffentlich
+unset GHCR_TOKEN
 ```
+
+Dann einspielen:
+
+```bash
+for ns in $(for f in "$PLAIN"/secrets/*.json; do jq -r .metadata.namespace "$f"; done | sort -u); do
+  kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
+done
+for f in "$PLAIN"/secrets/*.json; do kubectl apply --server-side --field-manager=bootstrap -f "$f"; done
+kubectl create secret generic sops-age -n flux-system --from-file=age.agekey="$PLAIN/mentolder.agekey" --dry-run=client -o yaml | kubectl apply -f -
+```
+
+Die Namespaces einzeln anlegen: `xargs` mit mehreren `-o yaml`-Ausgaben ergibt
+YAML ohne `---`-Trenner, und `kubectl apply` legt dann nur einen Namespace an.
 
 Secrets für `flux-system` aus dem Altcluster (`ghcr-auth`,
 `flux-operator-entitlement`, `gekko-mentolder-*`) nur übernehmen, wenn das neue
@@ -1189,6 +1239,7 @@ Stand der Analyse 2026-10-21 (Altcluster):
 | Dev-Tools | `brain`, `sessions-server`, `oauth2-proxy-session-hub` | in PR #20 entfernt, ziehen nach devmesh |
 | Cluster-Zugang | Patricks Bachelorprojekt-CI hat ein Secret `FLEET_KUBECONFIG` für den **heutigen** fleet-Cluster (Gekkos Knoten), dazu die Cloud-Umgebung „mentolder-prod“ (`scripts/cloud-env/`) | Der Rebuild macht beide wertlos (neue Cluster-CA). Die neue Kubeconfig (`~/.kube/fleet`) bekommt nur Gekko. Patrick löscht die toten Secrets in Phase 9 |
 | Node-Setup | `prod/cloud-init.yaml` lädt Skripte von `Paddione/Bachelorprojekt/main` | Skripte vendoren oder Zeilen entfernen, vor 5.3 |
+| Image-Pulls | `ghcr-pull-secret`/`ghcr-auth` mit Patricks GitHub-Token | erledigt in 6.1: ersetzt durch einen `read:packages`-Token von `gekko32`, `ghcr-auth` entfällt |
 | Review | `CODEOWNERS` nennt `@Paddione @gekko32` | **bewusst beibehalten**: gemeinsames Review, Gekko ist auf allen Pfaden eingetragen |
 
 Passwörter zum Benutzertausch (`KC_USER1`/`KC_USER2`): Vor 6.1 in der
