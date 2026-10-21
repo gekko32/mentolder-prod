@@ -51,7 +51,7 @@ Hinweise für KI-Agenten stehen in [`AGENTS.md`](./AGENTS.md).
 | [`flux/clusters/fleet/`](./flux/clusters/fleet) | Flux-Einstieg: FluxInstance, OCIRepository, Kustomizations, Receiver |
 | [`flux/*.yaml`](./flux) | alte Definitionen (Namespace `gekko-mentolder`), entfallen nach dem Rebuild (Runbook Phase 9) |
 | [`.github/workflows/render.yml`](./.github/workflows/render.yml) | rendert und signiert das Artefakt `ghcr.io/gekko32/mentolder-manifests` |
-| [`.github/workflows/build-images.yml`](./.github/workflows/build-images.yml) | baut mentolder-web, studio-server, einvoice-sidecar, mcp-node, talk-transcriber |
+| [`.github/workflows/build-images.yml`](./.github/workflows/build-images.yml) | baut mentolder-web, studio-server, einvoice-sidecar, talk-transcriber |
 | [`.github/workflows/build-collabora.yml`](./.github/workflows/build-collabora.yml) | baut collabora-code |
 | [`.github/workflows/build-downloads.yml`](./.github/workflows/build-downloads.yml) | baut den RustDesk-Installer (`downloads-content`, privat, nur manuell) |
 | [`scripts/`](./scripts) | Render (`flux-render-artifact.sh`), Umgebungsauflösung, Guards |

@@ -82,7 +82,6 @@ jobs:
           resolve COLLABORA_CODE_IMAGE_DIGEST collabora-code
           resolve DOWNLOADS_CONTENT_IMAGE_DIGEST downloads-content
           resolve EINVOICE_SIDECAR_IMAGE_DIGEST einvoice-sidecar
-          resolve MCP_NODE_IMAGE_DIGEST mcp-node
           resolve MENTOLDER_WEB_IMAGE_DIGEST mentolder-web
           resolve TALK_TRANSCRIBER_IMAGE_DIGEST talk-transcriber
           # Ein Tag je Kombination aller Image-Digests.
@@ -106,7 +105,6 @@ jobs:
           (cd prod-fleet/mentolder && kustomize edit set image \
             "ghcr.io/gekko32/downloads-content@${DOWNLOADS_CONTENT_IMAGE_DIGEST}" \
             "ghcr.io/gekko32/einvoice-sidecar@${EINVOICE_SIDECAR_IMAGE_DIGEST}" \
-            "ghcr.io/gekko32/mcp-node@${MCP_NODE_IMAGE_DIGEST}" \
             "ghcr.io/gekko32/mentolder-web@${MENTOLDER_WEB_IMAGE_DIGEST}" \
             "ghcr.io/gekko32/talk-transcriber@${TALK_TRANSCRIBER_IMAGE_DIGEST}")
           (cd prod-fleet/office && kustomize edit set image \

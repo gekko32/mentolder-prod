@@ -11,7 +11,6 @@ on:
       - components/mentolder-web/**
       - components/studio-server/**
       - docker/einvoice-sidecar/**
-      - docker/mcp-node/**
       - k3d/talk-transcriber/**
       - .github/workflows/build-images.yml
   pull_request:
@@ -19,7 +18,6 @@ on:
       - components/mentolder-web/**
       - components/studio-server/**
       - docker/einvoice-sidecar/**
-      - docker/mcp-node/**
       - k3d/talk-transcriber/**
       - .github/workflows/build-images.yml
 
@@ -49,9 +47,6 @@ jobs:
           - image: einvoice-sidecar
             context: docker/einvoice-sidecar
             file: docker/einvoice-sidecar/Dockerfile
-          - image: mcp-node
-            context: docker/mcp-node
-            file: docker/mcp-node/Dockerfile
           - image: talk-transcriber
             context: k3d/talk-transcriber
             file: k3d/talk-transcriber/Dockerfile
