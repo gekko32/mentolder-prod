@@ -69,3 +69,21 @@ spec:
     certManager:
       namespace: cert-manager
       serviceAccountName: cert-manager
+  # Der ipv64-Provider liest den Schluessel aus der Umgebung des Webhooks, nicht aus
+  # der Solver-Konfiguration des ClusterIssuers. Im Altcluster von Hand ergaenzt
+  # (Generalprobe 2026-10-21: ohne diese Variable "credentials information are missing").
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: Deployment
+              name: cert-manager-lego-webhook
+            patch: |
+              - op: add
+                path: /spec/template/spec/containers/0/env/-
+                value:
+                  name: IPV64_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: ipv64-api-key
+                      key: IPV64_API_KEY
