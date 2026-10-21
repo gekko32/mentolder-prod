@@ -31,6 +31,10 @@ data:
   BRAIN_EXTERNAL_URL: "${BRAIN_EXTERNAL_URL}"
   WHITEBOARD_EXTERNAL_URL: "${WHITEBOARD_EXTERNAL_URL}"
   BUG_REPORT_CHANNEL: "bugs"
+  # Admin-Saves oeffnen Content-PRs in diesem Repo, Bundle unter content/<brand>/
+  # (Token: Secret website-content-token, fine-grained, nur gekko32/website)
+  CONTENT_REPO: "gekko32/website"
+  CONTENT_PATH_PREFIX: "content"
   # Logging
   PINO_LOG_LEVEL: "info"
   # Pocket ID OIDC provider (replaced Keycloak)
