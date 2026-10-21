@@ -2,15 +2,15 @@
 # (flux-office). Vorher nur per Task imperativ eingespielt und nach dem
 # Fleet-Neuaufbau verloren. Admin-Passwort (collabora-secrets) kommt aus dem
 # SealedSecret in sealed-secrets/mentolder, deshalb ohne
-# k3d/office-stack/secret.yaml (Platzhalter). TLS ueber eigenes Certificate
-# im Namespace wie bei coturn, keine Kopie aus workspace.
+# k3d/office-stack/secret.yaml (Platzhalter). TLS kommt als Kopie von
+# workspace/workspace-wildcard-tls (CronJob tls-sync), kein eigenes Certificate:
+# mehrere Certificates fuer dieselben Namen lassen die ipv64-Challenges kollidieren.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../k3d/office-stack/namespace.yaml
   - ../../k3d/office-stack/collabora.yaml
   - ../../k3d/office-stack/ingress.yaml
-  - certificate.yaml
 patches:
   # Das Image ist oeffentlich; das Pull-Secret existiert nach einem
   # Neuaufbau nicht und kaeme nur ueber den alten Task.

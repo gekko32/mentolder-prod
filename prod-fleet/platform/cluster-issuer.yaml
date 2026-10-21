@@ -8,7 +8,19 @@ spec:
     email: quamain@web.de
     privateKeySecretRef:
       name: letsencrypt-prod-key
+    # Apex per HTTP-01, nur der Wildcard per DNS-01. Mit Apex und Wildcard per
+    # DNS-01 landen zwei TXT-Werte auf _acme-challenge.mentolder.de, und ipv64
+    # antwortet beim Aufraeumen des zweiten mit 403: die Challenge haengt, die
+    # Erneuerung bleibt stehen. Mit einer DNS-01-Challenge je Order tritt das
+    # nicht auf (Probe gegen LE-Staging 2026-10-21: ausgestellt, beide
+    # Challenges aufgeraeumt).
     solvers:
+      - selector:
+          dnsNames:
+            - mentolder.de
+        http01:
+          ingress:
+            ingressClassName: traefik
       - dns01:
           webhook:
             # cert-manager-lego-webhook — install via: task cert:install

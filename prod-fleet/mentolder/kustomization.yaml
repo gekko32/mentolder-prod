@@ -44,6 +44,13 @@ replicas:
 # mentolder wrapper (NOT fleet-common — korczewski has no equivalents, so a shared
 # delete would error). The harmless *.localhost dev IngressRoutes are left intact.
 patches:
+  # tls-sync taeglich statt woechentlich: office, coturn und website bekommen das
+  # Wildcard-Zertifikat nur noch als Kopie (ein Certificate in workspace).
+  - target: { group: batch, version: v1, kind: CronJob, name: tls-sync }
+    patch: |-
+      - op: replace
+        path: /spec/schedule
+        value: "17 3 * * *"
   # T016544: bge-hosts-patch.yaml ist entfallen — die llm-gateway-IngressRoutes
   # werden per $patch:delete unten entfernt; ein Patch ohne Ziel wuerde den Build
   # fehlschlagen lassen.
