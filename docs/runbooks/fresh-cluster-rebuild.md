@@ -791,6 +791,9 @@ Funde der Generalprobe, in den Skripten bzw. PR #20 bereits behoben:
 | `flux resume` wartet bis zum Intervall | Apps bleiben bis zu 10 min auf 0 | `restore-done` stößt `flux reconcile` an |
 | Nextcloud-Container läuft schon als `www-data`, `su` fragt nach Passwort | 6.6-Befehl scheitert | `php occ …` direkt |
 | Restore-Probe: Größen liegen 6–38 % unter Live (Bloat) | ±10 %-Kriterium schlägt fehl | Vergleich der Zeilenzahl je Tabelle (`probe.sh`) |
+| Cutover: `fleet-old-tunnel` nutzte trotz `ControlMaster=no` den geteilten SSH-Master (`ControlPath` aus `~/.ssh/config`) | Tunnel fällt alle 5 min mit dem Master, 4.2 scheiterte im ersten Versuch | `-o ControlPath=none` im Dienst |
+| Cutover: die Website (Namespace `website`) schreibt in `shared-db`, 4.2 und 6.3 frieren nur `workspace` ein | Buchungen nach dem Dump gehen verloren; `DROP DATABASE nextcloud` scheitert in 6.4, Restore landet auf der selbst installierten Nextcloud | 4.2: `kubectl -n website scale deploy website --replicas=0`; `restore-window` skaliert `website` mit herunter |
+| Cutover: `db-backup` sichert `website_massage`/`pocket_id_korczewski`, aber nicht `pocket_id` | nächtliches Backup bricht ab, Login-DB nie gesichert | PR #23 |
 | Auf `gekko-hetzner-2` läuft ein k3d-Dev-Cluster (`mentolder-dev`, seit 2026-05-13), auf `-3` ein GitHub-Runner für `Paddione/Bachelorprojekt`, auf allen drei `wg-gpu` zu 2.241.169.56 | gehen beim Rebuild verloren | Entscheidung vor Phase 5 |
 
 ## Phase 4: Wartungsfenster, Sicherung, Restore-Probe

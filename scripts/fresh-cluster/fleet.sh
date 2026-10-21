@@ -170,6 +170,9 @@ cmd_restore_window() {
   flux suspend kustomization mentolder-prod mentolder-prod-website -n flux-system
   for d in $(kubectl -n workspace get deploy -o name | grep -v '/shared-db$'); do kubectl -n workspace scale "$d" --replicas=0 >/dev/null; done
   kubectl -n workspace get cronjob -o name | xargs -r -n1 kubectl -n workspace patch --type merge -p '{"spec":{"suspend":true}}' >/dev/null
+  # die Website (eigener Namespace) haelt Verbindungen zu shared-db, sonst scheitert DROP DATABASE (Cutover 2026-10-21)
+  kubectl -n website scale deploy --all --replicas=0 >/dev/null
+  kubectl -n website wait --for=delete pod --all --timeout=180s >/dev/null 2>&1 || true
   kubectl -n workspace rollout status deploy/shared-db --timeout=300s
 }
 
