@@ -81,7 +81,7 @@ spec:
       containers:
         # ── mcp-node ────────────────────────────────────────────────
         - name: mcp-node
-          image: ghcr.io/paddione/mcp-node:latest
+          image: ghcr.io/gekko32/mcp-node:latest
           imagePullPolicy: Always
           env:
             # [T900191] llm-proxy und postgres laufen in devmesh

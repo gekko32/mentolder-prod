@@ -32,7 +32,7 @@ spec:
         - name: mentolder-web
           # runAsNonRoot-Ausnahme: nginx-Root-Entrypoint-Design (CHOWN/SETUID/SETGID-Caps,
           # Port 80) — Non-root-Umstellung braucht eigenen Change (uid 101 + Listen-Port)
-          image: ghcr.io/paddione/mentolder-web:latest
+          image: ghcr.io/gekko32/mentolder-web:latest
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false

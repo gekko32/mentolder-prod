@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-  # Zieht neue Website- und Brett-Images nach: rendert nur, wenn ghcr.io/gekko32/website:latest
-  # oder gekko32/brett:latest eine Digest-Kombination hat, zu der es noch kein Artefakt-Tag img-<hash> gibt.
+  # Zieht neue eigene Images nach: rendert nur, wenn die :latest-Digests aller eigenen Images
+  # (siehe images.env) eine Kombination ergeben, zu der es noch kein Artefakt-Tag img-<hash> gibt.
   schedule:
     - cron: '*/20 * * * *'
 
@@ -63,21 +63,32 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC1091
           source images.env
-          # Leer = aktuelles :latest. Ein gesetzter Wert in images.env pinnt bewusst.
-          if [[ -z "${WEBSITE_IMAGE_DIGEST:-}" ]]; then
-            WEBSITE_IMAGE_DIGEST="$(crane digest ghcr.io/gekko32/website:latest)" \
-              || { echo "gekko32/website nicht lesbar: WEBSITE_IMAGE_DIGEST in images.env setzen." >&2; exit 1; }
-          fi
-          if [[ -z "${BRETT_IMAGE_DIGEST:-}" ]]; then
-            BRETT_IMAGE_DIGEST="$(crane digest ghcr.io/gekko32/brett:latest)" \
-              || { echo "gekko32/brett nicht lesbar: BRETT_IMAGE_DIGEST in images.env setzen." >&2; exit 1; }
-          fi
-          echo "WEBSITE_IMAGE_DIGEST=$WEBSITE_IMAGE_DIGEST" >> "$GITHUB_ENV"
-          echo "BRETT_IMAGE_DIGEST=$BRETT_IMAGE_DIGEST" >> "$GITHUB_ENV"
-          # Ein Tag je Kombination aus Website- und Brett-Digest.
-          tag="img-$(printf '%s%s' "$WEBSITE_IMAGE_DIGEST" "$BRETT_IMAGE_DIGEST" | sha256sum | cut -c1-16)"
+          # Je Image: gesetzter Pin aus images.env, sonst Digest von ghcr.io/gekko32/<image>:latest.
+          resolve() {
+            local var="$1" image="$2" val="${!1:-}"
+            if [[ -z "$val" ]]; then
+              val="$(crane digest "ghcr.io/gekko32/${image}:latest")" \
+                || { echo "ghcr.io/gekko32/${image} nicht lesbar: ${var} in images.env setzen." >&2; exit 1; }
+            fi
+            [[ "$val" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "${var} ungueltig: ${val}" >&2; exit 1; }
+            printf -v "$var" '%s' "$val"
+            echo "${var}=${val}" >> "$GITHUB_ENV"
+            all="${all}${val}"
+          }
+          all=""
+          resolve WEBSITE_IMAGE_DIGEST website
+          resolve BRETT_IMAGE_DIGEST brett
+          resolve STUDIO_IMAGE_DIGEST studio-server
+          resolve COLLABORA_CODE_IMAGE_DIGEST collabora-code
+          resolve DOWNLOADS_CONTENT_IMAGE_DIGEST downloads-content
+          resolve EINVOICE_SIDECAR_IMAGE_DIGEST einvoice-sidecar
+          resolve MCP_NODE_IMAGE_DIGEST mcp-node
+          resolve MENTOLDER_WEB_IMAGE_DIGEST mentolder-web
+          resolve TALK_TRANSCRIBER_IMAGE_DIGEST talk-transcriber
+          # Ein Tag je Kombination aller Image-Digests.
+          tag="img-$(printf '%s' "$all" | sha256sum | cut -c1-16)"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          # Geplanter Lauf: nichts tun, wenn fuer diesen Website-Digest schon ein Artefakt existiert.
+          # Geplanter Lauf: nichts tun, wenn fuer diese Kombination schon ein Artefakt existiert.
           skip=false
           if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]] \
              && crane ls "${ARTIFACT}" 2>/dev/null | grep -qx "$tag"; then
@@ -85,6 +96,21 @@ jobs:
             echo "Artefakt fuer $tag existiert bereits, nichts zu tun."
           fi
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
+      - name: Pin own images
+        if: steps.digests.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          # Nur im CI-Arbeitsbaum, nicht committet. STUDIO_IMAGE_DIGEST geht ueber die
+          # Umgebung (envsubst), website/brett ebenso.
+          (cd prod-fleet/mentolder && kustomize edit set image \
+            "ghcr.io/gekko32/downloads-content@${DOWNLOADS_CONTENT_IMAGE_DIGEST}" \
+            "ghcr.io/gekko32/einvoice-sidecar@${EINVOICE_SIDECAR_IMAGE_DIGEST}" \
+            "ghcr.io/gekko32/mcp-node@${MCP_NODE_IMAGE_DIGEST}" \
+            "ghcr.io/gekko32/mentolder-web@${MENTOLDER_WEB_IMAGE_DIGEST}" \
+            "ghcr.io/gekko32/talk-transcriber@${TALK_TRANSCRIBER_IMAGE_DIGEST}")
+          (cd prod-fleet/office && kustomize edit set image \
+            "ghcr.io/gekko32/collabora-code@${COLLABORA_CODE_IMAGE_DIGEST}")
 
       - name: Render mentolder components
         if: steps.digests.outputs.skip != 'true'
@@ -94,6 +120,21 @@ jobs:
           set -euo pipefail
           bash scripts/ci-dummy-secrets.sh
           bash scripts/flux-render-artifact.sh --out ./out
+
+      - name: Check image references
+        if: steps.digests.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          # Keine Images aus fremden Registries des Upstream-Projekts, eigene nur digest-gepinnt.
+          if grep -rn 'ghcr.io/paddione' out/; then
+            echo "Artefakt referenziert ghcr.io/paddione." >&2; exit 1
+          fi
+          # fuehrungsfunk laeuft bewusst auf :latest (eigenes Repo, eigener Rollout).
+          unpinned="$(grep -rhoE 'ghcr\.io/gekko32/[A-Za-z0-9._/-]+[^"[:space:]]*' out/ \
+            | grep -v '@sha256:' | grep -v '^ghcr\.io/gekko32/fuehrungsfunk:' | sort -u || true)"
+          if [[ -n "$unpinned" ]]; then
+            echo "Nicht digest-gepinnte eigene Images:" >&2; echo "$unpinned" >&2; exit 1
+          fi
 
       - name: Push and sign OCI artifact
         if: steps.digests.outputs.skip != 'true'

@@ -343,12 +343,13 @@ echo "flux-render: validation gate passed."
 PLACEHOLDER_HITS="$(grep -rl \
   -e 'sha256:1111111111111111111111111111111111111111111111111111111111111111' \
   -e 'sha256:2222222222222222222222222222222222222222222222222222222222222222' \
+  -e 'sha256:3333333333333333333333333333333333333333333333333333333333333333' \
   "${OUT_DIR}" 2>/dev/null || true)"
 if [ -n "$PLACEHOLDER_HITS" ]; then
   echo "ERROR: placeholder digest found in rendered artifact:" >&2
   echo "$PLACEHOLDER_HITS" >&2
   echo "       CI sets the real digests via scripts/resolve-image-digest.sh;" >&2
-  echo "       offline renders must export WEBSITE_IMAGE_DIGEST/BRETT_IMAGE_DIGEST." >&2
+  echo "       offline renders must export WEBSITE_IMAGE_DIGEST/BRETT_IMAGE_DIGEST/STUDIO_IMAGE_DIGEST." >&2
   exit 1
 fi
 

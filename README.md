@@ -41,8 +41,8 @@ Hinweise für KI-Agenten stehen in [`AGENTS.md`](./AGENTS.md).
 | [`environments/versions.yaml`](./environments/versions.yaml) | Versionsstände |
 | [`secrets/`](./secrets) | Kubernetes-Secrets, SOPS/age-verschlüsselt (`<namespace>/<name>.sops.yaml`) |
 | [`.sops.yaml`](./.sops.yaml) | SOPS-Regel (age-Empfänger) |
-| [`images.env`](./images.env) | gepinnte Digests für website/brett (leer = `:latest` folgen) |
-| [`images-mirror.txt`](./images-mirror.txt) | Images, die aus `ghcr.io/paddione` nach `ghcr.io/gekko32` gespiegelt werden |
+| [`images.env`](./images.env) | gepinnte Digests aller eigenen Images (leer = `:latest` folgen) |
+| [`components/`](./components), [`docker/`](./docker), [`k3d/talk-transcriber/`](./k3d/talk-transcriber), [`rustdesk-installer/`](./rustdesk-installer) | Quellen der eigenen Images (vendored, siehe `VENDORED_FROM`) |
 
 ### Flux, CI, Skripte
 
@@ -51,7 +51,9 @@ Hinweise für KI-Agenten stehen in [`AGENTS.md`](./AGENTS.md).
 | [`flux/clusters/fleet/`](./flux/clusters/fleet) | Flux-Einstieg: FluxInstance, OCIRepository, Kustomizations, Receiver |
 | [`flux/*.yaml`](./flux) | alte Definitionen (Namespace `gekko-mentolder`), entfallen nach dem Rebuild (Runbook Phase 9) |
 | [`.github/workflows/render.yml`](./.github/workflows/render.yml) | rendert und signiert das Artefakt `ghcr.io/gekko32/mentolder-manifests` |
-| [`.github/workflows/mirror-images.yml`](./.github/workflows/mirror-images.yml) | stündlicher Image-Mirror |
+| [`.github/workflows/build-images.yml`](./.github/workflows/build-images.yml) | baut mentolder-web, studio-server, einvoice-sidecar, mcp-node, talk-transcriber |
+| [`.github/workflows/build-collabora.yml`](./.github/workflows/build-collabora.yml) | baut collabora-code |
+| [`.github/workflows/build-downloads.yml`](./.github/workflows/build-downloads.yml) | baut den RustDesk-Installer (`downloads-content`, privat, nur manuell) |
 | [`scripts/`](./scripts) | Render (`flux-render-artifact.sh`), Umgebungsauflösung, Guards |
 | [`.github/CODEOWNERS`](./.github/CODEOWNERS) | Pfade mit Review-Pflicht |
 
@@ -90,11 +92,11 @@ Flux (flux/clusters/fleet) <------- OCIRepository --+
 ## Betrieb
 
 - **Automatik:** Jeder Merge nach `main` rendert und rollt aus (Repo-Variable
-  `FLUX_ENABLED=true`). Alle 20 Minuten prüft `render.yml`, ob es neue
-  `gekko32/website`- oder `gekko32/brett`-Images gibt.
-- **Images:** `mirror-images.yml` kopiert stündlich die Liste aus
-  `images-mirror.txt` (Digest bleibt gleich). `website`, `brett` und
-  `fuehrungsfunk` sind eigene Builds und werden nie überschrieben.
+  `FLUX_ENABLED=true`). Alle 20 Minuten prüft `render.yml`, ob eines der
+  eigenen Images (`images.env`) ein neues `:latest` hat.
+- **Images:** Alle Images unter `ghcr.io/gekko32` entstehen aus Quellen in
+  diesem Repo bzw. in den Repos website, brett und fuehrungsfunk. Der Render
+  pinnt jedes Image per Digest.
 - **Von Hand rendern:** *Actions → Render mentolder artifact → Run workflow*.
 - **Status:** `flux get kustomizations -A`, `flux get sources all -A`.
 - **Secret ändern:** `sops secrets/<ns>/<name>.sops.yaml`, PR, Merge.
@@ -108,13 +110,12 @@ Flux (flux/clusters/fleet) <------- OCIRepository --+
 |---|---|---|
 | `FLUX_ENABLED` | Variable | `true` = Render auch bei Push auf `main` |
 | `FLUX_WEBHOOK_URL`, `FLUX_WEBHOOK_TOKEN` | Secret, optional | sofortiger Reconcile über den Receiver `flux-webhook` |
-| `PADDIONE_GHCR_READ_TOKEN` | Secret, optional | Mirror des privaten `downloads-content` |
+| `RUSTDESK_CLIENT_CONFIG_STRING`, `RUSTDESK_UNATTENDED_PASSWORD` | Secret | werden in `build-downloads.yml` in den Installer eingebacken |
 
 ## Was nicht hier liegt
 
 | Teil | Ort |
 |---|---|
-| App-Quellcode und Builds von mentolder-web, studio-server, talk-transcriber, einvoice-sidecar, downloads-content, mcp-node, collabora-code | Paddione/Bachelorprojekt (CI baut nach `ghcr.io/paddione`, der Mirror kopiert) |
 | Website, brett, Führungsfunk | eigene Repos von gekko32 |
 | Klartext-Secrets, SOPS-Schlüssel | Gekkos Vaultwarden |
 | Entwicklungswerkzeuge, Dev-/Staging-Umgebungen | nicht in Prod |

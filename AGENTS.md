@@ -20,11 +20,12 @@ keine Staging-Stufe dazwischen. Behandle jede Änderung als Produktionsänderung
    SOPS-Dateien (`*.sops.yaml` mit `sops:`-Block). Klartext-Secrets nie
    committen, auch nicht kurzzeitig. Vor jedem Commit prüfen:
    `grep -rL '^sops:' secrets --include='*.sops.yaml'` muss leer sein.
-4. **Eigene Images nie überschreiben:** `ghcr.io/gekko32/{brett,website,fuehrungsfunk}`.
-   Diese Namen gehören nicht in `images-mirror.txt`.
-5. **Keine Referenzen auf `ghcr.io/paddione/*`** im Render. Neue Images aus
-   Bachelorprojekt erst in `images-mirror.txt` eintragen und im Overlay per
-   Kustomize `images:` auf `ghcr.io/gekko32/*` umschreiben.
+4. **Eigene Images nie überschreiben:** `ghcr.io/gekko32/{brett,website,fuehrungsfunk}`
+   bauen ihre eigenen Repos. Alle übrigen Images baut dieses Repo aus seinen Quellen
+   (`build-images.yml`, `build-collabora.yml`, `build-downloads.yml`).
+5. **Keine Referenzen auf `ghcr.io/paddione/*`** im Render, kein Kopieren von dort.
+   Ein neues Image bekommt Quellen und Build-Job hier, einen Eintrag in `images.env`
+   und einen `resolve`/`kustomize edit set image`-Schritt in `render.yml`.
 6. **Datengebundene Werte nie neu erzeugen:** `*_DB_PASSWORD`, Postgres-Superuser,
    Nextcloud `secret`/`passwordsalt`/`instanceid`, Pocket-ID-Encryption-Key,
    OIDC-Client-Secrets, Signaling/TURN-Secrets. Sie passen zu vorhandenen Daten.
@@ -40,6 +41,7 @@ keine Staging-Stufe dazwischen. Behandle jede Änderung als Produktionsänderung
    ```bash
    export WEBSITE_IMAGE_DIGEST=$(crane digest ghcr.io/gekko32/website:latest)
    export BRETT_IMAGE_DIGEST=$(crane digest ghcr.io/gekko32/brett:latest)
+   export STUDIO_IMAGE_DIGEST=$(crane digest ghcr.io/gekko32/studio-server:latest)
    CI=true bash scripts/flux-render-artifact.sh --out /tmp/out
    grep -rc 'ghcr.io/paddione' /tmp/out   # muss 0 sein
    ```
@@ -56,7 +58,8 @@ keine Staging-Stufe dazwischen. Behandle jede Änderung als Produktionsänderung
 |---|---|
 | Domain, Knoten, Feature-Schalter, TURN | `environments/fleet-mentolder.yaml` (Variable vorher in `environments/schema.yaml` definieren) |
 | Workspace-Dienst ein-/ausschalten | `prod-fleet/mentolder/kustomization.yaml`, Abschnitt `replicas` |
-| Image-Version | `images.env` (website/brett) bzw. Digest im Overlay, gespiegelte Images über `images-mirror.txt` |
+| Image-Version | `images.env` (leer = `:latest` folgen, `sha256:...` pinnt) |
+| Image-Quellcode | `components/`, `docker/`, `k3d/talk-transcriber/`, `rustdesk-installer/` |
 | neues Secret oder Secret-Wert | `secrets/<ns>/<name>.sops.yaml` per `sops` |
 | neue Flux-Kustomization | `flux/clusters/fleet/` |
 | Website | `prod-fleet/website-mentolder/` |

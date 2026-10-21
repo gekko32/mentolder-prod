@@ -19,7 +19,7 @@ spec:
       containers:
         # :latest is intentional — rebuilt on every release (build-rustdesk-installer.yml, see gotchas-footguns.md)
         - name: downloads
-          image: ghcr.io/paddione/downloads-content:latest
+          image: ghcr.io/gekko32/downloads-content:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8787

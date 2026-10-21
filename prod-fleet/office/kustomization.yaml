@@ -18,8 +18,3 @@ patches:
     patch: |-
       - op: remove
         path: /spec/template/spec/imagePullSecrets
-
-# Runbook 3.2: Collabora gespiegelt nach ghcr.io/gekko32 (Digest unveraendert).
-images:
-  - name: ghcr.io/paddione/collabora-code
-    newName: ghcr.io/gekko32/collabora-code

@@ -83,8 +83,8 @@ env_vars:
   LLM_EMBED_MODEL: "bge-m3"
 
   STUDIO_DOMAIN: studio.mentolder.de
-  STUDIO_IMAGE: ghcr.io/paddione/studio-server
-  STUDIO_IMAGE_DIGEST: sha256:3fb082d01ee1679ccbe75831e7badc66f51fae8995afa5283da03eb4d349e7f3
+  STUDIO_IMAGE: ghcr.io/gekko32/studio-server
+  STUDIO_IMAGE_DIGEST: sha256:3333333333333333333333333333333333333333333333333333333333333333
   # ── Dev stack (dev.mentolder.de) ─────────────────────────────────────
   DEV_DOMAIN: "dev.mentolder.de"
   DEV_NODE: "dev-vm"

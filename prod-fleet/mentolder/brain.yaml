@@ -159,7 +159,7 @@ spec:
         - name: ghcr-pull-secret
       containers:
         - name: brain
-          image: ghcr.io/paddione/mcp-node:latest
+          image: ghcr.io/gekko32/mcp-node:latest
           imagePullPolicy: Always
           command: ["node", "/opt/brain/proxy.mjs"]
           env:

@@ -1,0 +1,128 @@
+name: Build RustDesk installer (downloads-content)
+# Baut den RustDesk-Wrapper fuer mentolder und veroeffentlicht ihn als privates Image
+# ghcr.io/gekko32/downloads-content (static-web-server). render.yml loest den Digest von
+# :latest auf, ein neuer Build wird damit beim naechsten Render ausgerollt.
+#
+# Nur manuell: Das Bundle enthaelt das Unattended-Passwort und darf nie als oeffentliches
+# Artefakt entstehen. Verteilung ausschliesslich ueber downloads.mentolder.de hinter SSO.
+# Repo-Secrets: RUSTDESK_CLIENT_CONFIG_STRING, RUSTDESK_UNATTENDED_PASSWORD.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  EXPECTED_ID_SERVER: rustdesk.mentolder.de
+  RUSTDESK_VERSION: "1.4.8"
+  RUSTDESK_MSI_URL: "https://github.com/rustdesk/rustdesk/releases/download/1.4.8/rustdesk-1.4.8-x86_64.msi"
+  RUSTDESK_MSI_SHA256: "17117c3a609445bb49cb9298c5cb53cf9c95f0bc4eae8353b81bb5b280c03307"
+  IMAGE: ghcr.io/gekko32/downloads-content
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: false
+
+      - name: Download + pin-verify official RustDesk MSI
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri $env:RUSTDESK_MSI_URL -OutFile rustdesk-installer/official-rustdesk.msi
+          $got = (Get-FileHash rustdesk-installer/official-rustdesk.msi -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $env:RUSTDESK_MSI_SHA256.ToLower()) {
+            Write-Error "SHA256 mismatch: got $got expected $env:RUSTDESK_MSI_SHA256"; exit 1
+          }
+
+      - name: Stage cmd.exe shim for the provisioning ExePackage
+        shell: pwsh
+        run: Copy-Item "$env:WINDIR\System32\cmd.exe" rustdesk-installer/cmd-shim.exe
+
+      - name: Bake secrets into provision.cmd
+        shell: pwsh
+        env:
+          RD_CONFIG: ${{ secrets.RUSTDESK_CLIENT_CONFIG_STRING }}
+          RD_PASSWORD: ${{ secrets.RUSTDESK_UNATTENDED_PASSWORD }}
+        run: |
+          if (-not $env:RD_CONFIG -or -not $env:RD_PASSWORD) { Write-Error "RustDesk-Secrets fehlen"; exit 1 }
+          $p = Get-Content rustdesk-installer/provision.cmd -Raw
+          $p = $p.Replace('__RUSTDESK_CONFIG__', $env:RD_CONFIG).Replace('__RUSTDESK_PASSWORD__', $env:RD_PASSWORD)
+          Set-Content -Path rustdesk-installer/provision.cmd -Value $p -NoNewline
+
+      - name: Build wrapper bundle
+        shell: pwsh
+        run: |
+          # Ueber die .wixproj (dotnet build): die Bal-Extension laesst sich mit `wix build -ext` nicht aufloesen.
+          dotnet build rustdesk-installer/rustdesk-installer.wixproj -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $built = Get-ChildItem -Path rustdesk-installer -Recurse -Filter "rustdesk-workspace-installer.exe" | Select-Object -First 1
+          if (-not $built) { Write-Error "built bundle exe not found"; exit 1 }
+          Copy-Item $built.FullName rustdesk-workspace-installer.exe
+
+      - name: Silent-install the wrapper bundle
+        shell: pwsh
+        run: |
+          $p = Start-Process .\rustdesk-workspace-installer.exe -ArgumentList '/quiet','/norestart','/log','install.log' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content install.log; Write-Error "install failed ($($p.ExitCode))"; exit 1 }
+
+      - name: Smoke test - config targets the expected ID server
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "$env:APPDATA\RustDesk\config\RustDesk2.toml",
+            "C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk2.toml",
+            "C:\Windows\System32\config\systemprofile\AppData\Roaming\RustDesk\config\RustDesk2.toml"
+          )
+          $cfg = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $cfg) { Write-Error "RustDesk config TOML not found"; exit 1 }
+          if (-not (Select-String -Path $cfg -SimpleMatch $env:EXPECTED_ID_SERVER -Quiet)) {
+            Write-Error "config does not target $env:EXPECTED_ID_SERVER"; exit 1
+          }
+
+      - name: Install crane
+        shell: pwsh
+        run: |
+          # docker buildx fehlt auf windows-latest; downloads.Dockerfile hat keine RUN-Schritte,
+          # crane baut das Image daher rein ueber Manifest/Tar.
+          $url = "https://github.com/google/go-containerregistry/releases/download/v0.21.7/go-containerregistry_Windows_x86_64.tar.gz"
+          $sha256 = "88a1693e8d49298f9c44c81fbca55efea8f5ab1be3c760534cfb8d932ca88baa"
+          Invoke-WebRequest -Uri $url -OutFile crane.tar.gz
+          $got = (Get-FileHash crane.tar.gz -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $sha256) { Write-Error "crane SHA256 mismatch: got $got expected $sha256"; exit 1 }
+          tar -xzf crane.tar.gz crane.exe
+
+      - name: Log in to GHCR (crane)
+        shell: pwsh
+        env:
+          CRANE_USER: ${{ github.actor }}
+          CRANE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: .\crane.exe auth login ghcr.io -u "$env:CRANE_USER" -p "$env:CRANE_PASSWORD"
+
+      - name: Pre-push guard - refuse to publish over a public package
+        shell: bash
+        run: bash scripts/assert-image-private.sh downloads-content latest allow-missing
+
+      - name: Build & push downloads image
+        shell: pwsh
+        run: |
+          $tagSha = "$($env:IMAGE):sha-$(git rev-parse HEAD)"
+          # Muss zum Basis-Image in scripts/downloads.Dockerfile passen.
+          $baseImage = "joseluisq/static-web-server:2.44.1-alpine"
+          New-Item -ItemType Directory -Force -Path layer-root/public | Out-Null
+          Copy-Item rustdesk-workspace-installer.exe layer-root/public/rustdesk-workspace-installer.exe
+          Copy-Item scripts/downloads-index.html layer-root/public/index.html
+          tar -cf layer.tar -C layer-root public
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\crane.exe append -b $baseImage --platform linux/amd64 -f layer.tar -t $tagSha
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\crane.exe mutate $tagSha --env SERVER_ROOT=/public --env SERVER_PORT=8787 --env SERVER_CACHE_CONTROL_HEADERS=false -t $tagSha
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\crane.exe tag $tagSha latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify downloads-content package is private
+        shell: bash
+        run: bash scripts/assert-image-private.sh downloads-content latest

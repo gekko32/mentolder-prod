@@ -85,7 +85,7 @@ env_vars:
 
   STUDIO_DOMAIN: studio.mentolder.de
   STUDIO_IMAGE: ghcr.io/gekko32/studio-server
-  STUDIO_IMAGE_DIGEST: sha256:3fb082d01ee1679ccbe75831e7badc66f51fae8995afa5283da03eb4d349e7f3
+  STUDIO_IMAGE_DIGEST: sha256:3333333333333333333333333333333333333333333333333333333333333333
   # Dev stack intentionally omitted — dev migration is Phase 2c.
   DEV_SSH_ALLOWLIST: ""
   EMAIL_NOTIFICATIONS_ENABLED: "false"
