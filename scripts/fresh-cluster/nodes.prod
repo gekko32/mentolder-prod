@@ -1,0 +1,6 @@
+# Knoten des fleet-Clusters (Runbook Phase 5). Erste Zeile mit Rolle init
+# startet etcd (cluster-init), die anderen treten ueber deren private IP bei.
+# name            private-ip     public-ip        role
+gekko-hetzner-2   192.168.200.2  178.104.169.206  init
+gekko-hetzner-3   192.168.200.3  46.225.125.59    join
+gekko-hetzner-4   192.168.200.4  178.104.159.79   join

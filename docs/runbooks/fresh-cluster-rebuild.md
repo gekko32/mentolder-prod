@@ -742,6 +742,57 @@ Neues Verzeichnis `flux/clusters/fleet/` im Repo:
 
 ---
 
+## Schnellweg: Phase 4 bis 6 mit `scripts/fresh-cluster/` (Generalprobe 2026-10-21)
+
+Die Schritte 4.3 bis 6.6 sind als Skripte erprobt. Generalprobe am 2026-10-21 auf
+drei Wegwerf-Servern (`rehearsal.sh`, LE-Staging, CronJobs aus, ausgehend kein
+SMTP) mit einer Live-Sicherung der Produktion: alle Hosts antworteten wie im
+Altcluster, Datenbank zeilengenau, Volumes in gleicher Größe. Danach abgebaut.
+Die Abschnitte 4.x bis 6.x unten bleiben die Referenz für das Warum.
+
+Voraussetzungen: Phase 2.0 in dieser Shell geladen (`. ~/mentolder-ops/env.sh`),
+`$PLAIN/ghcr-token` (6.1), Tunnel zum Altcluster als User-Dienst
+`fleet-old-tunnel` (1.1, `Restart=always`), Linger an.
+
+| Schritt | Befehl | Dauer (Probe) |
+|---|---|---|
+| 4.2 | PR #21 mergen, Flux anwenden lassen, dann `flux suspend kustomization --all -n gekko-mentolder` | 5 min |
+| 4.3/4.4 | `S=scripts/fresh-cluster; echo ~/mentolder-ops/backup/$(date +%F) > ~/mentolder-ops/backup.dir; . ~/mentolder-ops/env.sh; $S/backup.sh "$B"` | 8 min |
+| 4.5 | `$S/probe.sh "$B"`, Zweitkopie `rsync -a "$B" "$(cat ~/mentolder-ops/second-copy.dir)/"` | 3 min |
+| `GATE` | „Phase 5 starten“ | |
+| 5.2 | `CONFIRM=rebuild $S/fleet.sh rebuild` | 2 min |
+| 5.3 | `$S/fleet.sh wait` (Tailnet + cloud-init) | 5–8 min |
+| 5.4 | `$S/fleet.sh k3s` (Kanal v1.37, Token aus der Handover-Datei) | 2 min |
+| 6.1 | `export KUBECONFIG=~/.kube/fleet; echo ~/.kube/fleet > ~/mentolder-ops/kubeconfig.current; TLS_BACKUP=$B/tls-secrets.json.age $S/fleet.sh secrets` | 1 min |
+| 6.2 | `$S/fleet.sh flux` (PR #20 ist seit 2026-10-21 19:01 auf `main`, `render.yml` erzeugt das Artefakt) | 10 min |
+| 6.3 | `$S/fleet.sh restore-window` | 1 min |
+| 6.4 | `$S/fleet.sh restore-db "$B"` | 1 min |
+| 6.5 | `$S/fleet.sh restore-pvcs "$B"` | 7 min |
+| 6.6 | `$S/fleet.sh restore-done`, danach `occ` (siehe 6.6) | 5 min |
+| 6.7 | Abnahme | 15 min |
+
+Geschätzte Ausfallzeit damit rund 75 Minuten statt 3 Stunden.
+
+Funde der Generalprobe, in den Skripten bzw. PR #20 bereits behoben:
+
+| Fund | Folge ohne Korrektur | Korrektur |
+|---|---|---|
+| `kubectl exec` über den API-Tunnel bricht große Streams ab (websocket 1006) | DB-Dump abgeschnitten, unbemerkt | Dump/Restore per SSH auf dem DB-Knoten, Vollständigkeitsprüfung auf `dump complete` |
+| `tar` endet mit 1, wenn Dateien sich ändern (Grafana läuft weiter) | 4.4 bricht nach der ersten Monitoring-PVC ab | Exit 1 als Warnung |
+| `tailscale up --ssh` übernimmt Port 22 im Tailnet, Policy erlaubt SSH nur `autogroup:self` | kein SSH zu den getaggten Knoten über das Tailnet | ohne `--ssh`, normales sshd |
+| Grundprovisionierung jetzt per cloud-init beim Rebuild (`node-cloud-init.yaml.tmpl`) | – | kein root-SSH aus dem Internet; Einmal-Auth-Key je Knoten (1 h), da Hetzner user-data im Klartext hält |
+| k3s-Kanal `stable` ist v1.36, der Altcluster lief auf v1.37.1 | Downgrade der Kubernetes-Version | Kanal `v1.37` |
+| Öffentlich offen im Altcluster: 6443, 10250, 2379/2380, 8472, 9500, 10256 | – | nur noch privat/Tailnet; öffentlich 22 (limit), 80, 443, TURN, Janus |
+| cert-manager und lego-Webhook waren von Hand per Helm installiert, nicht im Render | `platform` scheitert am fehlenden ClusterIssuer-CRD | PR #20: `flux/infra` (HelmReleases, Kustomization `infra-controllers`) |
+| lego-Webhook braucht `IPV64_API_KEY` als Umgebungsvariable (im Altcluster von Hand ergänzt) | DNS-01 meldet „credentials missing“ | PR #20: postRenderer im HelmRelease |
+| ipv64 antwortet beim Aufräumen der zweiten TXT-Antwort (Apex + Wildcard) mit 403, cert-manager arbeitet Challenges je DNS-Name nacheinander ab | nur das erste Wildcard-Zertifikat wird ausgestellt, die anderen hängen (Ursache für `office-wildcard` InProgress im Altcluster) | TLS-Secrets aus dem Altcluster mitnehmen (gültig bis 2027-01-10). **Offen bis zur Erneuerung am 2026-12-11** |
+| Secret `monitoring/monitoring-admission` (kube-webhook-certgen) fehlt in Render und Handover | Prometheus-Operator startet nicht | `fleet.sh secrets` erzeugt ein selbstsigniertes Paar |
+| `downloads-content` ist privat, `render.yml` (GITHUB_TOKEN) kann es nicht lesen | Render auf `main` scheitert, Flux bekommt kein Artefakt | Paket-Einstellung „Manage Actions access“: `gekko32/mentolder-prod` mit Read, sonst Digest in `images.env` pinnen |
+| `flux resume` wartet bis zum Intervall | Apps bleiben bis zu 10 min auf 0 | `restore-done` stößt `flux reconcile` an |
+| Nextcloud-Container läuft schon als `www-data`, `su` fragt nach Passwort | 6.6-Befehl scheitert | `php occ …` direkt |
+| Restore-Probe: Größen liegen 6–38 % unter Live (Bloat) | ±10 %-Kriterium schlägt fehl | Vergleich der Zeilenzahl je Tabelle (`probe.sh`) |
+| Auf `gekko-hetzner-2` läuft ein k3d-Dev-Cluster (`mentolder-dev`, seit 2026-05-13), auf `-3` ein GitHub-Runner für `Paddione/Bachelorprojekt`, auf allen drei `wg-gpu` zu 2.241.169.56 | gehen beim Rebuild verloren | Entscheidung vor Phase 5 |
+
 ## Phase 4: Wartungsfenster, Sicherung, Restore-Probe
 
 ### 4.1 Platz prüfen
