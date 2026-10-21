@@ -1079,6 +1079,32 @@ Manuell durch den Operator:
 
 ---
 
+### 6.8 Restbezüge zu Patrick lösen
+
+Ziel: Der neue Cluster hängt an keinem Konto und keiner Identität von Patrick.
+Stand der Analyse 2026-10-21 (Altcluster):
+
+| Bezug | heute | Maßnahme |
+|---|---|---|
+| Tailnet | Knoten im Tailnet `p.korczewski@` | erledigt mit 5.1 (Tailnet `gekko32@github`) |
+| ACME-Konto | ClusterIssuer `letsencrypt-prod` mit E-Mail `noreply-bachelorprojekt@mailbox.org` | neue Issuer-E-Mail von Gekko, Secret `letsencrypt-prod-key` **nicht** übernehmen (neuer Account-Key) |
+| DNS-01 | Webhook `lego-solver`, Provider ipv64, Secret `ipv64-api-key` | Eigentümer der ipv64-Zone `mentolder.de` klären. Liegt sie in Patricks ipv64-Konto: Zone in ein eigenes Konto umziehen (oder zu Gekkos DNS-Anbieter) und neuen API-Key in `secrets/` |
+| Identität | `KC_USER1_EMAIL=patrick@korczewski.de`, oauth2-proxy `allowed-emails=patrick@korczewski.de`, Pocket-ID-Bootstrap-Admin `paddione` | Bootstrap-Admin und `KC_USER1_*` auf Gekko umstellen. Ob Patrick einen normalen Zugang behält, entscheidet Gekko |
+| Datenbanken | Schemas/Skripte `bachelorprojekt`, `meetings` in `shared-db`; Repo-Embeddings aus `k1-embed` | beim Restore (6.4) nur mentolder-Daten zurückspielen; Embeddings-Tabellen von Bachelorprojekt nicht übernehmen |
+| Dev-Tools | `brain`, `sessions-server`, `oauth2-proxy-session-hub` | in PR #20 entfernt, ziehen nach devmesh |
+| Cluster-Zugang | Patricks CI hat `FLEET_KUBECONFIG`, Cloud-Umgebung „mentolder-prod“ (`scripts/cloud-env/`) | neue Kubeconfigs nur an Gekko; Patrick löscht die alten Secrets in Phase 9 |
+| Node-Setup | `prod/cloud-init.yaml` lädt Skripte von `Paddione/Bachelorprojekt/main` | Skripte vendoren oder Zeilen entfernen, vor 5.3 |
+| Review | `CODEOWNERS` nennt `@Paddione` | auf `@gekko32` reduzieren, wenn kein gemeinsames Review mehr gewünscht ist |
+
+`GATE`: Operator bestätigt jede Zeile als erledigt oder bewusst beibehalten.
+Prüfung:
+
+```bash
+flux get sources all -A | grep -i paddione            # leer
+kubectl get clusterissuer letsencrypt-prod -o jsonpath='{.spec.acme.email}'   # Gekkos Adresse
+kubectl -n workspace get cm -o yaml | grep -ci 'korczewski'                    # 0 oder bewusst beibehalten
+```
+
 ## Phase 7: Optionale Dienste
 
 ### 7.1 Kandidaten
