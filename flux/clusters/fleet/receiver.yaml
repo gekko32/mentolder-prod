@@ -2,16 +2,37 @@
 # "Ping Flux receiver"). Geteiltes Geheimnis: flux-system/flux-webhook-token
 # (neu fuer mentolder erzeugt, Runbook 2.4). Ohne Repo-Secret FLUX_WEBHOOK_URL
 # greift Flux nach seinem 10-Minuten-Intervall.
+# Repo-Secrets: FLUX_WEBHOOK_URL = https://hooks.mentolder.de + .status.webhookPath,
+# FLUX_WEBHOOK_TOKEN = Wert aus flux-webhook-token. render.yml signiert den Ping
+# (X-Signature, HMAC-SHA256), generic-hmac weist unsignierte Aufrufe ab.
 apiVersion: notification.toolkit.fluxcd.io/v1
 kind: Receiver
 metadata:
   name: flux-webhook
   namespace: flux-system
 spec:
-  type: generic
+  type: generic-hmac
   secretRef:
     name: flux-webhook-token
   resources:
     - kind: OCIRepository
       name: mentolder-manifests
       namespace: flux-system
+---
+# Oeffentlicher Zugang nur fuer /hook/. TLS ohne secretName: Traefik waehlt das
+# Wildcard-Zertifikat per SNI aus den geladenen Secrets (wie grafana-prod).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: flux-webhook
+  namespace: flux-system
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`hooks.mentolder.de`) && PathPrefix(`/hook/`)
+      services:
+        - name: webhook-receiver
+          port: 80
+  tls: {}
