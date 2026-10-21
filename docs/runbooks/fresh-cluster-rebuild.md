@@ -59,7 +59,7 @@ Vor Phase 1 vom Operator erfragen und in `~/mentolder-ops/inputs.env` ablegen
 
 | ID | Name | Beispiel / Hinweis | Geheim |
 |---|---|---|---|
-| I0 | Handover-Datei | `mentolder-handover-<datum>.json` aus `scripts/handover-export.sh` (siehe [Phase 2.0](#20-handover-datei)). Enthält alle Secrets und I1, I2 und I5 | ja |
+| I0 | Handover-Datei | `mentolder-handover-<datum>.json` aus `scripts/handover-export.sh` oder die per `age -p` verschlüsselte Fassung `….json.age` (beide gehen, siehe [Phase 2.0](#20-handover-datei)). Enthält alle Secrets und I1, I2 und I5 | ja |
 | I1 | `HCLOUD_TOKEN` | Hetzner-Cloud-Projekt der gekko-Server, Read/Write. Nur für `NODE_RESET=rebuild` (siehe I8) | ja |
 | I2 | `TS_AUTHKEY`, `TS_API_KEY` | Tailnet `gekko32@github`. Auth-Key: reusable, **nicht** ephemeral, Tag `tag:fleet` (siehe 5.1) | ja |
 | I3 | `VW_URL`, `VW_EMAIL` | Vaultwarden ist Teil des Deployments und am Anfang nicht verfügbar. Erst in Phase 8 nötig, siehe 7.5 | URL nein |
@@ -181,13 +181,25 @@ ssh-keygen -y -f ~/.ssh/gekko_ed25519 | cut -d' ' -f2 | diff - <(cut -d' ' -f2 ~
 ```
 
 Liegt der Schlüssel auf diesem Rechner nicht unter dem Pfad oben, aus der
-Handover-Datei übernehmen:
+Handover-Datei übernehmen. Das holt den Schritt „Handover-Datei einlesen“ aus
+[Phase 2.0](#20-handover-datei) vor (dort dann überspringen):
 
 ```bash
-jq -r '.items[]|select(.name=="ops/ssh-gekko_ed25519").notes' /mnt/c/<pfad>/mentolder-handover-*.json > ~/.ssh/gekko_ed25519
-jq -r '.items[]|select(.name=="ops/ssh-gekko_ed25519").fields[0].value' /mnt/c/<pfad>/mentolder-handover-*.json > ~/.ssh/gekko_ed25519.pub
+sudo apt-get update && sudo apt-get install -y age jq
+PLAIN=/run/user/$(id -u)/mentolder-plain; install -d -m700 "$PLAIN"
+HO=/mnt/c/<pfad>/mentolder-handover-<datum>.json.age   # oder ….json (unverschluesselt)
+case "$HO" in
+  *.age) age -d -o "$PLAIN/handover.json" "$HO" ;;   # fragt nach der Passphrase
+  *)     install -m600 "$HO" "$PLAIN/handover.json" ;;
+esac
+jq -e '.items|length>0' "$PLAIN/handover.json" >/dev/null && echo handover-ok
+jq -r '.items[]|select(.name=="ops/ssh-gekko_ed25519").notes' "$PLAIN/handover.json" > ~/.ssh/gekko_ed25519
+jq -r '.items[]|select(.name=="ops/ssh-gekko_ed25519").fields[0].value' "$PLAIN/handover.json" > ~/.ssh/gekko_ed25519.pub
 chmod 600 ~/.ssh/gekko_ed25519
 ```
+
+`$PLAIN` liegt in tmpfs und verschwindet beim WSL-Stopp. Dann diesen Block
+wiederholen.
 
 ### 0.7 SSH-Konfiguration
 
@@ -297,7 +309,9 @@ chmod +x ~/.local/bin/*
 cat versions.lock
 ```
 
-Danach anmelden: `gh auth login` (I4), `hcloud context create gekko` (I1).
+Danach anmelden: `gh auth login` (I4). Für `hcloud` (I1) reicht das in 2.0 aus
+der Handover-Datei gesetzte `HCLOUD_TOKEN` in der Umgebung, ohne Handover-Datei
+`hcloud context create gekko`.
 
 `GATE`: Werkzeugliste und SSH-Verifikation zeigen.
 
@@ -388,18 +402,64 @@ Operatoren generierte Secrets. Am 2026-10-20 nutzte der Altcluster alle in den
 Workloads referenzierten Schlüssel ohne Lücke (70 `secretKeyRef`/`envFrom`
 geprüft). Leer war nur `website-secrets:GITHUB_MODELS_TOKEN` (optional).
 
-Auf dem Ausführungsrechner:
+Auf dem Ausführungsrechner. Die Datei darf unverschlüsselt (`.json`) oder mit
+`age -p` verschlüsselt (`.json.age`) vorliegen. Wurde sie schon in 0.6
+eingelesen, den ersten Block überspringen.
+
+Handover-Datei einlesen:
 
 ```bash
 PLAIN=/run/user/$(id -u)/mentolder-plain; install -d -m700 "$PLAIN"
-mv /mnt/c/<pfad>/mentolder-handover-*.json "$PLAIN/handover.json"
+HO=/mnt/c/<pfad>/mentolder-handover-<datum>.json.age   # oder ….json (unverschluesselt)
+case "$HO" in
+  *.age) age -d -o "$PLAIN/handover.json" "$HO" ;;   # fragt nach der Passphrase
+  *)     install -m600 "$HO" "$PLAIN/handover.json" ;;
+esac
+jq -e '.items|length>0' "$PLAIN/handover.json" >/dev/null && echo handover-ok
+```
+
+Werte übernehmen:
+
+```bash
+# handover-to-secrets.sh liegt in gekko32/mentolder-prod (nach dem Merge von PR #18
+# auf main, bis dahin Branch docs/fresh-cluster-runbook). Klon aus 3.1 vorziehen:
+[ -d ~/mentolder-ops/prod ] || git clone https://github.com/gekko32/mentolder-prod ~/mentolder-ops/prod
+cd ~/mentolder-ops/prod && { [ -f scripts/handover-to-secrets.sh ] || git checkout docs/fresh-cluster-runbook -- scripts/handover-to-secrets.sh; }
 bash scripts/handover-to-secrets.sh "$PLAIN/handover.json" "$PLAIN/secrets"
 jq -r '.items[]|select(.name=="ops/sops-age").fields[]|select(.name=="SOPS_AGE_KEY").value' "$PLAIN/handover.json" > "$PLAIN/mentolder.agekey"
 jq -r '.items[]|select(.name=="ops/sops-age").fields[]|select(.name=="SOPS_AGE_PUBLIC").value' "$PLAIN/handover.json" > ~/mentolder-ops/age.pub
+# Zugaenge aus ops/inputs (fuer 5.1 bis 5.3)
+ho_input() { jq -r --arg k "$1" '.items[]|select(.name=="ops/inputs").fields[]|select(.name==$k).value' "$PLAIN/handover.json"; }
+{ printf 'export TS_AUTHKEY=%q\n'   "$(ho_input TAILSCALE_AUTH_KEY)"
+  printf 'export TS_API_KEY=%q\n'   "$(ho_input TAILSCALE_API_KEY)"
+  printf 'export HCLOUD_TOKEN=%q\n' "$(ho_input HCLOUD_TOKEN)"; } > "$PLAIN/inputs.secret.env"
+chmod 600 "$PLAIN/inputs.secret.env"
+. "$PLAIN/inputs.secret.env"
+for v in TS_AUTHKEY TS_API_KEY HCLOUD_TOKEN; do [ -n "${!v}" ] && echo "$v gesetzt" || echo "$v FEHLT"; done
 ```
 
-Damit sind 2.1 und 2.2 erledigt, weiter mit 2.3. Die Originaldatei auf dem
-Transportmedium danach mit `shred -u` vernichten.
+`$PLAIN/inputs.secret.env` in jeder neuen Shell vor Phase 5 erneut laden
+(`. "$PLAIN/inputs.secret.env"`).
+
+Damit sind 2.1 und 2.2 erledigt, mit einer Ausnahme: Die passwortgeschützte
+Kopie des age-Schlüssels aus 2.1 ist **Pflicht**. Ohne sie liegt der Schlüssel,
+der alle Backups aus Phase 4 entschlüsselt, nur in tmpfs. Ein WSL-Neustart vor
+Phase 8 macht die Backups dann unlesbar:
+
+```bash
+age -p -o ~/mentolder-ops/mentolder.agekey.age "$PLAIN/mentolder.agekey"   # Passphrase gibt der Operator ein
+```
+
+Weiter mit 2.3. Die Handover-Datei auf dem Transportmedium **nicht** sofort
+vernichten:
+
+- `.json.age`: bis zum Abschluss von Phase 8.3 aufbewahren, dann mit `shred -u` löschen.
+- `.json` (unverschlüsselt): sofort verschlüsselt sichern und das Original vernichten:
+  `age -p -o ~/mentolder-ops/handover.json.age "$PLAIN/handover.json" && shred -u "$HO"`.
+
+Nach einem WSL-Neustart lassen sich `$PLAIN` und der Schlüssel mit dem Block
+„Handover-Datei einlesen“ (dann mit `HO=~/mentolder-ops/handover.json.age`) oder mit
+`age -d -o "$PLAIN/mentolder.agekey" ~/mentolder-ops/mentolder.agekey.age` wiederherstellen.
 
 ### 2.1 Arbeitsbereich und age-Schlüssel (nur ohne Handover-Datei)
 
@@ -696,8 +756,14 @@ kubectl -n workspace exec deploy/shared-db -- sh -c 'psql -U "${POSTGRES_USER:-p
 
 Den Benutzernamen gegebenenfalls aus dem Deployment lesen
 (`kubectl -n workspace get deploy shared-db -o yaml | grep -A1 POSTGRES_USER`).
-Die Postgres-Version festhalten:
-`kubectl -n workspace exec deploy/shared-db -- postgres --version > "$B/db-version.txt"`.
+Die Postgres-Version und das genaue Image festhalten (die Restore-Probe braucht
+dasselbe Image, falls `shared-db` Erweiterungen wie pgvector mitbringt):
+
+```bash
+kubectl -n workspace exec deploy/shared-db -- postgres --version > "$B/db-version.txt"
+kubectl -n workspace get deploy shared-db -o jsonpath='{.spec.template.spec.containers[0].image}' > "$B/db-image.txt"
+kubectl -n workspace exec deploy/shared-db -- sh -c 'psql -U "${POSTGRES_USER:-postgres}" -Atc "select extname from pg_extension" -d postgres' > "$B/db-extensions.txt"
+```
 
 ### 4.4 Volumes (roh, per SSH vom Knoten)
 
@@ -713,10 +779,15 @@ kubectl get pv -o json | jq -r '.items[]|select(.spec.claimRef.namespace|IN("wor
 while IFS=$'\t' read -r ns pvc path node; do
   case "$pvc" in bge-*|prometheus-*|alertmanager-*) continue;; esac
   echo ">> $ns/$pvc von $node"
-  ssh "$node/gekko" "sudo tar --numeric-owner --xattrs --acls -C '$path' -cpf - ." \
+  ssh -n "$node/gekko" "sudo tar --numeric-owner --xattrs --acls -C '$path' -cpf - ." \
     | pv -N "$pvc" | zstd -T0 | tee >(sha256sum > "$B/${ns}__${pvc}.sha256") | age -r "$R" > "$B/${ns}__${pvc}.tar.zst.age"
 done < "$B/pv-map.tsv"
+# Vollstaendigkeit: ein Archiv pro nicht uebersprungener PVC
+grep -cvE $'\t(bge-|prometheus-|alertmanager-)' "$B/pv-map.tsv"; ls "$B"/*.tar.zst.age | wc -l
 ```
+
+`ssh -n` ist Pflicht: Ohne `-n` liest `ssh` den Rest von `pv-map.tsv` aus stdin,
+und nur die erste PVC wird gesichert. Beide Zahlen oben müssen gleich sein.
 
 TLS-Secrets und alle anderen Secrets liegen bereits aus Phase 2.2 vor. Zusätzlich
 die etcd-Datenbank sichern, um bei einem Rückbau den Altcluster samt Zustand
@@ -733,8 +804,10 @@ ssh gekko-hetzner-2/gekko 'sudo cat /var/lib/rancher/k3s/server/token' | age -r 
 ```bash
 age -d -i "$PLAIN/mentolder.agekey" "$B/shared-db.sql.zst.age" | zstd -dc > "$PLAIN/probe.sql"
 command -v docker >/dev/null || sudo apt-get install -y docker.io
-PGMAJOR=$(grep -oE '[0-9]+' "$B/db-version.txt" | head -1)
-sudo docker run -d --name pgprobe -e POSTGRES_PASSWORD=probe "postgres:$PGMAJOR"
+# dasselbe Image wie shared-db (Erweiterungen), sonst Fallback auf postgres:<major>
+PGIMAGE=$(cat "$B/db-image.txt" 2>/dev/null)
+[ -n "$PGIMAGE" ] || PGIMAGE="postgres:$(grep -oE '[0-9]+' "$B/db-version.txt" | head -1)"
+sudo docker run -d --name pgprobe -e POSTGRES_PASSWORD=probe "$PGIMAGE"
 until sudo docker exec pgprobe pg_isready -U postgres >/dev/null 2>&1; do sleep 2; done
 sudo docker exec -i pgprobe psql -U postgres -v ON_ERROR_STOP=0 < "$PLAIN/probe.sql" > /dev/null 2> "$PLAIN/probe.err"
 sudo docker exec pgprobe psql -U postgres -Atc "select datname, pg_database_size(datname) from pg_database where not datistemplate"
@@ -743,7 +816,11 @@ sudo docker rm -f pgprobe; shred -u "$PLAIN/probe.sql"
 
 Erwartung: dieselben Datenbanken wie in `db-sizes.txt`, Größen im Bereich ±10 %.
 Fehler in `probe.err` sind nur zulässig für bereits existierende Rollen
-(`role "postgres" already exists`).
+(`role "postgres" already exists`) und `current user cannot be dropped`
+(Folge von `--clean`). Prüfen:
+`grep -v -E 'already exists|current user cannot be dropped' "$PLAIN/probe.err" | head -20`.
+Ist das Image privat (`ghcr.io/…`), vorher `sudo docker login ghcr.io` oder auf
+`postgres:<major>` plus passende Erweiterung ausweichen.
 
 Für jede Volume-Datei: `age -d … | zstd -dc | tar -tf - | wc -l` (lesbar,
 Dateianzahl > 0). Nextcloud-App muss `config/config.php` enthalten.
@@ -753,7 +830,9 @@ Zweite Kopie: das komplette `$B` auf ein zweites Ziel kopieren (NUC bei
 Windows-Laufwerk oder Filen).
 
 `GATE`: Ab hier ist der Weg destruktiv. Vorlegen: Liste der Backup-Dateien mit
-Größe und SHA-256-Präfix, Ergebnis der Restore-Probe, Ort der Zweitkopie.
+Größe und SHA-256-Präfix (Anzahl Volume-Archive = Anzahl PVCs aus 4.4),
+Ergebnis der Restore-Probe, Ort der Zweitkopie, Nachweis, dass der age-Schlüssel
+außerhalb von tmpfs verschlüsselt vorliegt (`ls -l ~/mentolder-ops/mentolder.agekey.age`).
 Operator muss mit „Phase 5 starten“ bestätigen.
 
 ---
@@ -775,6 +854,12 @@ Stand 2026-10-20 im Tailnet `gekko32@github`:
   verschwinden nach längerer Offline-Zeit aus dem Tailnet. Für Server ist das
   ungeeignet.
 
+`TS_AUTHKEY` und `TS_API_KEY` kommen aus 2.0 (`. "$PLAIN/inputs.secret.env"`).
+Der Auth-Key in der Handover-Datei vom 2026-10-20 ist identisch mit
+`tailscale-authkey-fleet.txt`. In der Admin-Konsole unter **Settings → Keys**
+prüfen, ob er schon reusable, nicht ephemeral und mit `tag:fleet` angelegt ist.
+Dann entfallen die Schritte 2 und 3 unten, Schritt 1 (Policy) trotzdem prüfen.
+
 Vorher korrigieren (per API mit `TS_API_KEY` oder in der Admin-Konsole):
 
 1. In der Policy ergänzen: `"tagOwners": {"tag:fleet": ["autogroup:admin"]}`.
@@ -783,9 +868,11 @@ Vorher korrigieren (per API mit `TS_API_KEY` oder in der Admin-Konsole):
 3. Den alten Key `kW8beSCrcC21CNTRL` widerrufen.
 
 ```bash
-curl -s -u "$TS_API_KEY:" -X POST https://api.tailscale.com/api/v2/tailnet/-/keys \
+TS_AUTHKEY=$(curl -s -u "$TS_API_KEY:" -X POST https://api.tailscale.com/api/v2/tailnet/-/keys \
   -H 'Content-Type: application/json' \
-  -d '{"capabilities":{"devices":{"create":{"reusable":true,"ephemeral":false,"preauthorized":true,"tags":["tag:fleet"]}}},"expirySeconds":7776000,"description":"fleet-nodes"}' | jq -r .key
+  -d '{"capabilities":{"devices":{"create":{"reusable":true,"ephemeral":false,"preauthorized":true,"tags":["tag:fleet"]}}},"expirySeconds":7776000,"description":"fleet-nodes"}' | jq -r .key)
+case "$TS_AUTHKEY" in tskey-auth-*) echo "neuer Auth-Key gesetzt";; *) echo "FEHLER: kein Key erhalten"; unset TS_AUTHKEY;; esac
+sed -i "s|^export TS_AUTHKEY=.*|$(printf 'export TS_AUTHKEY=%q' "$TS_AUTHKEY")|" "$PLAIN/inputs.secret.env"
 ```
 
 Die alten Einträge `gekko-hetzner-2/3/4` in Patricks Tailnet entfernt Patrick
@@ -837,6 +924,8 @@ Als root über SSH, idempotent. Grundlage ist
 um diese Punkte ergänzt:
 
 ```bash
+. "$PLAIN/inputs.secret.env"
+[ -n "${TS_AUTHKEY:-}" ] || { echo "TS_AUTHKEY fehlt, zuerst 2.0 und 5.1"; exit 1; }
 provision() {  # $1=name $2=private-ip $3=public-ip
 ssh -o StrictHostKeyChecking=accept-new root@"$3" bash -s <<EOF
 set -euo pipefail
@@ -954,7 +1043,8 @@ schreiben lassen oder einen nächtlichen Pull vom NUC aus einrichten.
 ### 6.1 Secrets vorab anwenden (außerhalb von Flux)
 
 Namespaces anlegen und alle Secrets aus Phase 2 einspielen, **bevor** Flux die
-Workloads und Certificates anlegt:
+Workloads und Certificates anlegt. Vorher die Passwörter `KC_USER1`/`KC_USER2`
+tauschen (Block am Ende von [6.8](#68-restbezüge-zu-patrick-lösen)):
 
 ```bash
 for f in "$PLAIN"/secrets/*.json; do jq -r .metadata.namespace "$f"; done | sort -u | xargs -n1 -I{} kubectl create namespace {} --dry-run=client -o yaml | kubectl apply -f -
@@ -1015,18 +1105,23 @@ es keine Rolle, auf welchem Knoten local-path das neue Volume anlegt.
 
 ```bash
 restore_pvc() {  # $1=namespace $2=pvc
-kubectl -n "$1" run "restore-$2" --restart=Never --image=alpine:3 --overrides="{\"spec\":{\"containers\":[{\"name\":\"r\",\"image\":\"alpine:3\",\"command\":[\"sleep\",\"86400\"],\"volumeMounts\":[{\"name\":\"d\",\"mountPath\":\"/data\"}]}],\"volumes\":[{\"name\":\"d\",\"persistentVolumeClaim\":{\"claimName\":\"$2\"}}]}}"
+kubectl -n "$1" run "restore-$2" --restart=Never --image=debian:stable-slim --overrides="{\"spec\":{\"containers\":[{\"name\":\"r\",\"image\":\"debian:stable-slim\",\"command\":[\"sleep\",\"86400\"],\"volumeMounts\":[{\"name\":\"d\",\"mountPath\":\"/data\"}]}],\"volumes\":[{\"name\":\"d\",\"persistentVolumeClaim\":{\"claimName\":\"$2\"}}]}}"
 kubectl -n "$1" wait --for=condition=Ready "pod/restore-$2" --timeout=180s
 kubectl -n "$1" exec "restore-$2" -- sh -c 'find /data -mindepth 1 -delete'
 age -d -i "$PLAIN/mentolder.agekey" "$B/${1}__${2}.tar.zst.age" | zstd -dc | pv -N "$2" \
-  | kubectl -n "$1" exec -i "restore-$2" -- tar --numeric-owner -xpf - -C /data
+  | kubectl -n "$1" exec -i "restore-$2" -- tar --numeric-owner --xattrs --acls -xpf - -C /data
 kubectl -n "$1" exec "restore-$2" -- du -sh /data
 kubectl -n "$1" delete pod "restore-$2" --wait
 }
 for p in nextcloud-app nextcloud-data-pvc pocket-id-data brain-data fuehrungsfunk-daten backup-pvc; do restore_pvc workspace "$p"; done
 ```
 
-Größen mit `inventory/disk.txt` vergleichen.
+Größen mit `inventory/disk.txt` vergleichen. Das Hilfs-Image ist
+`debian:stable-slim`, weil dessen GNU-tar die beim Backup gesetzten Optionen
+(`--numeric-owner --xattrs --acls`) versteht. Busybox-tar aus Alpine verliert
+sie, dann stimmen z. B. die Besitzrechte von Nextcloud (uid 33) nicht.
+Stichprobe: `kubectl -n workspace exec deploy/nextcloud -- stat -c '%u %n' /var/www/html/config/config.php`
+muss nach 6.6 `33` zeigen.
 
 ### 6.6 Hochfahren
 
@@ -1087,14 +1182,22 @@ Stand der Analyse 2026-10-21 (Altcluster):
 | Bezug | heute | Maßnahme |
 |---|---|---|
 | Tailnet | Knoten im Tailnet `p.korczewski@` | erledigt mit 5.1 (Tailnet `gekko32@github`) |
-| ACME-Konto | ClusterIssuer `letsencrypt-prod` mit E-Mail `noreply-bachelorprojekt@mailbox.org` | neue Issuer-E-Mail von Gekko, Secret `letsencrypt-prod-key` **nicht** übernehmen (neuer Account-Key) |
-| DNS-01 | Webhook `lego-solver`, Provider ipv64, Secret `ipv64-api-key` | Eigentümer der ipv64-Zone `mentolder.de` klären. Liegt sie in Patricks ipv64-Konto: Zone in ein eigenes Konto umziehen (oder zu Gekkos DNS-Anbieter) und neuen API-Key in `secrets/` |
-| Identität | `KC_USER1_EMAIL=patrick@korczewski.de`, oauth2-proxy `allowed-emails=patrick@korczewski.de`, Pocket-ID-Bootstrap-Admin `paddione` | Bootstrap-Admin und `KC_USER1_*` auf Gekko umstellen. Ob Patrick einen normalen Zugang behält, entscheidet Gekko |
+| ACME-Konto | ClusterIssuer `letsencrypt-prod` mit E-Mail `noreply-bachelorprojekt@mailbox.org` | erledigt in PR #20: E-Mail `quamain@web.de` (Gekko). Secret `letsencrypt-prod-key` **nicht** übernehmen (neuer Account-Key) |
+| DNS-01 | Webhook `lego-solver`, Provider ipv64, Secret `ipv64-api-key` | **bewusst beibehalten** (Entscheidung Patrick, 2026-10-21): Die Zone `mentolder.de` bleibt in Patricks ipv64-Konto und wird dort gepflegt. Folge: Zertifikatserneuerung hängt an Patricks API-Key. Rotiert Patrick ihn, bekommt Gekko den neuen Wert für `ipv64-api-key` (Namespaces `workspace` und `cert-manager`) |
+| Identität | `KC_USER1_EMAIL=patrick@korczewski.de`, oauth2-proxy `allowed-emails=patrick@korczewski.de`, Pocket-ID-Bootstrap-Admin `paddione` | erledigt in PR #20: `KC_USER1` = `gekko`/`quamain@web.de`, `KC_USER2` = `paddione`/`patrick@korczewski.de`. Die Passwörter mittauschen, siehe unten. Bootstrap-Admin auf Gekko umstellen |
 | Datenbanken | Schemas/Skripte `bachelorprojekt`, `meetings` in `shared-db`; Repo-Embeddings aus `k1-embed` | beim Restore (6.4) nur mentolder-Daten zurückspielen; Embeddings-Tabellen von Bachelorprojekt nicht übernehmen |
 | Dev-Tools | `brain`, `sessions-server`, `oauth2-proxy-session-hub` | in PR #20 entfernt, ziehen nach devmesh |
-| Cluster-Zugang | Patricks CI hat `FLEET_KUBECONFIG`, Cloud-Umgebung „mentolder-prod“ (`scripts/cloud-env/`) | neue Kubeconfigs nur an Gekko; Patrick löscht die alten Secrets in Phase 9 |
+| Cluster-Zugang | Patricks Bachelorprojekt-CI hat ein Secret `FLEET_KUBECONFIG` für den **heutigen** fleet-Cluster (Gekkos Knoten), dazu die Cloud-Umgebung „mentolder-prod“ (`scripts/cloud-env/`) | Der Rebuild macht beide wertlos (neue Cluster-CA). Die neue Kubeconfig (`~/.kube/fleet`) bekommt nur Gekko. Patrick löscht die toten Secrets in Phase 9 |
 | Node-Setup | `prod/cloud-init.yaml` lädt Skripte von `Paddione/Bachelorprojekt/main` | Skripte vendoren oder Zeilen entfernen, vor 5.3 |
-| Review | `CODEOWNERS` nennt `@Paddione` | auf `@gekko32` reduzieren, wenn kein gemeinsames Review mehr gewünscht ist |
+| Review | `CODEOWNERS` nennt `@Paddione @gekko32` | **bewusst beibehalten**: gemeinsames Review, Gekko ist auf allen Pfaden eingetragen |
+
+Passwörter zum Benutzertausch (`KC_USER1`/`KC_USER2`): Vor 6.1 in der
+Secret-Datei tauschen, damit jedes Passwort beim richtigen Benutzer bleibt:
+
+```bash
+f="$PLAIN/secrets/workspace__workspace-secrets.json"
+jq '.data |= (.KC_USER1_PASSWORD as $a | .KC_USER1_PASSWORD = .KC_USER2_PASSWORD | .KC_USER2_PASSWORD = $a)' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+```
 
 `GATE`: Operator bestätigt jede Zeile als erledigt oder bewusst beibehalten.
 Prüfung:
@@ -1294,6 +1397,9 @@ rmdir "$PLAIN"
 rm -f ~/mentolder-ops/inputs.secret.env
 bw lock; unset BW_SESSION
 ```
+
+Handover-Datei vernichten (die Werte liegen jetzt in Vaultwarden):
+`shred -u ~/mentolder-ops/handover.json.age /mnt/c/<pfad>/mentolder-handover-*.json.age 2>/dev/null`.
 
 Bleiben dürfen: die age-verschlüsselten Backups und `mentolder.agekey.age`
 (Passphrase in Vaultwarden). Die Backups nach 30 Tagen löschen, sofern der neue
