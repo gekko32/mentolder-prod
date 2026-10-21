@@ -10,6 +10,7 @@ spec:
   timeout: 5m
   dependsOn:
     - name: mentolder-secrets
+    - name: infra-controllers
   sourceRef:
     kind: OCIRepository
     name: mentolder-manifests

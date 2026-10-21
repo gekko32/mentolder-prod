@@ -1,0 +1,71 @@
+# cert-manager und der DNS-01-Webhook fuer ipv64 (lego). Im Altcluster von Hand per
+# Helm installiert (task cert:install), im Render nicht enthalten. Werte wie dort
+# (Stand 2026-10-21: cert-manager v1.21.2, cert-manager-lego-webhook 1.6.2).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: jetstack
+  namespace: flux-system
+spec:
+  interval: 12h
+  url: https://charts.jetstack.io
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: cert-manager-lego-webhook
+  namespace: flux-system
+spec:
+  interval: 12h
+  url: https://yxwuxuanl.github.io/cert-manager-lego-webhook
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: cert-manager
+      version: v1.21.2
+      sourceRef:
+        kind: HelmRepository
+        name: jetstack
+        namespace: flux-system
+  install:
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+  values:
+    crds:
+      enabled: true
+    podDnsPolicy: Default
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cert-manager-lego-webhook
+  namespace: cert-manager
+spec:
+  interval: 1h
+  dependsOn:
+    - name: cert-manager
+  chart:
+    spec:
+      chart: cert-manager-lego-webhook
+      version: 1.6.2
+      sourceRef:
+        kind: HelmRepository
+        name: cert-manager-lego-webhook
+        namespace: flux-system
+  values:
+    certManager:
+      namespace: cert-manager
+      serviceAccountName: cert-manager

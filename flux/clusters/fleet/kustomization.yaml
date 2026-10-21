@@ -4,5 +4,6 @@ resources:
   - flux-instance.yaml
   - oci-source.yaml
   - ks-secrets.yaml
+  - ks-infra.yaml
   - ks-prod.yaml
   - receiver.yaml
