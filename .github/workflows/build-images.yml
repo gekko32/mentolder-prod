@@ -77,6 +77,11 @@ jobs:
           file: ${{ matrix.file }}
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
+          # Nur mentolder-web nutzt diese Args (VITE_* werden ins Bundle gebacken), die
+          # uebrigen Images ignorieren sie. Ohne Formspree-Secret faellt das Formular auf mailto zurueck.
+          build-args: |
+            VITE_FORMSPREE_ENDPOINT=${{ secrets.MENTOLDER_WEB_FORMSPREE_ENDPOINT }}
+            VITE_WEBSITE_ORIGIN=https://web.mentolder.de
           tags: |
             ghcr.io/gekko32/${{ matrix.image }}:latest
             ghcr.io/gekko32/${{ matrix.image }}:sha-${{ github.sha }}

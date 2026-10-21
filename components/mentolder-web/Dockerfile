@@ -3,7 +3,8 @@
 FROM node:26-alpine AS build
 WORKDIR /app
 
-RUN corepack enable && corepack prepare pnpm@10 --activate
+# node:26 bringt kein corepack mehr mit
+RUN npm install -g pnpm@10.15.0
 
 COPY components/mentolder-web/ .
 
