@@ -14,3 +14,12 @@ spec:
           env:
             - name: VECTOR_DB_ENABLED
               value: "0"
+            # E-Mail-Versand im Adminbereich (Website SPEZ-EMAIL-VERSAND, E1, 23.10.2026): Schlüssel,
+            # mit dem die Website das SMTP-Passwort aus den Einstellungen verschlüsselt. optional:
+            # ohne ihn startet die Website trotzdem und versendet über die Server-Einstellung.
+            - name: MAIL_SETTINGS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: website-mailkey
+                  key: MAIL_SETTINGS_KEY
+                  optional: true
