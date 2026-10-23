@@ -40,8 +40,8 @@ env_vars:
   WEBSITE_NODE_AFFINITY: '["gekko-hetzner-2","gekko-hetzner-3","gekko-hetzner-4"]'
   INFRA_NAMESPACE: mentolder-infra
   TLS_SECRET_NAME: workspace-wildcard-tls
-  SMTP_FROM: mentolder@mailbox.org
-  SMTP_USER: mentolder@mailbox.org
+  SMTP_FROM: info@mentolder.de
+  SMTP_USER: info@mentolder.de
   SMTP_HOST: smtp.mailbox.org
   SMTP_PORT: "587"
   SMTP_SECURE: "false"
