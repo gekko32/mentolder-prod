@@ -26,6 +26,7 @@ concurrency:
 permissions:
   contents: read
   packages: write
+  actions: write   # Render nach dem Hochladen anstossen
 
 jobs:
   build-push:
@@ -66,6 +67,7 @@ jobs:
           context: docker/collabora
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
           build-args: |
             UPSTREAM_TAG=${{ steps.tag.outputs.upstream }}
           tags: |
@@ -77,3 +79,34 @@ jobs:
             org.opencontainers.image.licenses=MPL-2.0
           cache-from: type=gha,scope=collabora
           cache-to: type=gha,mode=min,scope=collabora
+
+      # Starttest: Collabora wie im Pod starten (Capabilities, ssl aus) und auf
+      # dieselbe Antwort warten wie die livenessProbe (GET / auf 9980 -> "OK").
+      # Faengt u. a. kaputte Bibliotheken ab (27.10.2026: "GLIBC_2.38 not found"
+      # erst im Cluster). Bei Fehler landen die letzten Logzeilen als Annotation
+      # im Lauf. Im PR das geladene Image, auf main das gerade hochgeladene.
+      - name: Smoke test (Collabora startet und antwortet)
+        run: |
+          set -uo pipefail
+          docker run -d --name cool-smoke --cap-add SYS_ADMIN --cap-add MKNOD \
+            -e extra_params="--o:ssl.enable=false --o:ssl.termination=true" \
+            -p 9980:9980 \
+            "ghcr.io/gekko32/collabora-code:${{ steps.tag.outputs.published }}"
+          for i in $(seq 1 60); do
+            if [ "$(curl -s --max-time 2 http://127.0.0.1:9980/)" = "OK" ]; then
+              echo "Collabora antwortet nach ${i}x2 s"; docker rm -f cool-smoke >/dev/null; exit 0
+            fi
+            [ "$(docker inspect -f '{{.State.Running}}' cool-smoke)" = "true" ] || break
+            sleep 2
+          done
+          echo "::error::Collabora antwortet nicht (Status: $(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' cool-smoke))"
+          docker logs cool-smoke 2>&1 | grep -vE ' (TRC|DBG) ' | tail -15 | sed 's/^/::error::/'
+          exit 1
+
+      # Ohne diesen Anstoss nimmt der Render, der parallel zum Push startet,
+      # noch den alten Digest von :latest.
+      - name: Trigger render
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run render.yml --repo "${{ github.repository }}" --ref main

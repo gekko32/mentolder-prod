@@ -18,8 +18,8 @@
 #   - no runAsUser override (coolwsd refuses to start as root)
 #
 # Multi-stage build: upstream images >=26.04 are distroless (no /bin/sh),
-# so we install setcap in a builder stage and copy the needed binaries
-# into the upstream image so we can run setcap.
+# so we install setcap in a builder stage and copy it, with its own libc
+# and loader, into /opt/setcap of the upstream image.
 ARG UPSTREAM_TAG=26.04.5.2.1
 
 # ── Stage 1: builder with setcap ────────────────────────────────
@@ -33,13 +33,13 @@ FROM collabora/code:${UPSTREAM_TAG}@sha256:c7415b963e32eb0986a562583f154d36d3d7a
 
 USER root
 
-# Copy setcap and its dependencies from builder to work around distroless base
-COPY --from=builder /usr/sbin/setcap /usr/sbin/setcap
-COPY --from=builder /usr/sbin/getcap /usr/sbin/getcap
-COPY --from=builder /bin/sh /bin/sh
-COPY --from=builder /lib/x86_64-linux-gnu/libcap.so.2 /lib/x86_64-linux-gnu/libcap.so.2
-COPY --from=builder /lib/x86_64-linux-gnu/libc.so.6 /lib/x86_64-linux-gnu/libc.so.6
-COPY --from=builder /lib64/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
+# Copy setcap/getcap together with the builder's own libc and loader into
+# a private directory. Never copy them over the system paths: the upstream
+# image ships a newer glibc, and replacing /lib/x86_64-linux-gnu/libc.so.6
+# with bookworm's 2.36 makes coolwsd fail with "GLIBC_2.38 not found".
+# The tools are run through the private loader in exec form (no shell).
+COPY --from=builder /usr/sbin/setcap /usr/sbin/getcap /opt/setcap/
+COPY --from=builder /lib/x86_64-linux-gnu/libcap.so.2 /lib/x86_64-linux-gnu/libc.so.6 /lib64/ld-linux-x86-64.so.2 /opt/setcap/
 
 # The upstream image ships two forkit binaries:
 #   /usr/bin/coolforkit-caps — uses CAP_SYS_ADMIN directly to bind-mount
@@ -61,13 +61,12 @@ COPY --from=builder /lib64/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
 # picks the caps path, and also setcap coolwsd itself so its own
 # startup bind-mount self-test passes (needed before coolwsd will
 # mark bind-mounting as usable at all).
-RUN /usr/sbin/setcap cap_chown,cap_fowner,cap_mknod,cap_sys_admin,cap_sys_chroot=ep \
-        /usr/bin/coolforkit-caps \
-    && /usr/sbin/setcap cap_chown,cap_fowner,cap_mknod,cap_sys_admin,cap_sys_chroot,cap_setuid,cap_setgid=ep \
-        /usr/bin/coolforkit-ns \
-    && /usr/sbin/setcap cap_sys_admin,cap_mknod,cap_setuid,cap_setgid=eip \
-        /usr/bin/coolwsd \
-    && /usr/sbin/getcap /usr/bin/coolforkit-caps /usr/bin/coolforkit-ns /usr/bin/coolwsd
+RUN ["/opt/setcap/ld-linux-x86-64.so.2", "--library-path", "/opt/setcap", "/opt/setcap/setcap", \
+     "cap_chown,cap_fowner,cap_mknod,cap_sys_admin,cap_sys_chroot=ep", "/usr/bin/coolforkit-caps", \
+     "cap_chown,cap_fowner,cap_mknod,cap_sys_admin,cap_sys_chroot,cap_setuid,cap_setgid=ep", "/usr/bin/coolforkit-ns", \
+     "cap_sys_admin,cap_mknod,cap_setuid,cap_setgid=eip", "/usr/bin/coolwsd"]
+RUN ["/opt/setcap/ld-linux-x86-64.so.2", "--library-path", "/opt/setcap", "/opt/setcap/getcap", \
+     "/usr/bin/coolforkit-caps", "/usr/bin/coolforkit-ns", "/usr/bin/coolwsd"]
 
 # Collabora's own entrypoint refuses to start as root, so we flip back
 # to the image's original user (uid 1001, cool). File capabilities
