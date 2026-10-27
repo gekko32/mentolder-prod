@@ -20,7 +20,7 @@
 # Multi-stage build: upstream images >=26.04 are distroless (no /bin/sh),
 # so we install setcap in a builder stage and copy the needed binaries
 # into the upstream image so we can run setcap.
-ARG UPSTREAM_TAG=26.04.5.1.1
+ARG UPSTREAM_TAG=26.04.5.2.1
 
 # ── Stage 1: builder with setcap ────────────────────────────────
 FROM debian:bookworm-slim AS builder
@@ -29,7 +29,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Stage 2: final image (upstream Collabora) ───────────────────
-FROM collabora/code:${UPSTREAM_TAG}@sha256:bb8f3c9c5c9016045f25fccb5f0649be94469ebc7c7cc379f3576e470cccf33d
+FROM collabora/code:${UPSTREAM_TAG}@sha256:c7415b963e32eb0986a562583f154d36d3d7a461e1ddfb660a95e87094328acb
 
 USER root
 
