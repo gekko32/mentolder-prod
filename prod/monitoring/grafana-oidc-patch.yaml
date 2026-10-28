@@ -52,6 +52,14 @@ spec:
                 secretKeyRef:
                   name: grafana-oidc
                   key: GRAFANA_ADMIN_PASSWORD
+            # 29.10.2026: Rollen, die ein Admin in Grafana vergibt, bleiben erhalten (Gerald
+            # stuft sich per technik/hetzner/grafana-admin.sh hoch; die E-Mail steht so nicht im
+            # oeffentlichen Repo). Neue Konten starten weiter als Viewer.
+            - name: GF_AUTH_GENERIC_OAUTH_SKIP_ORG_ROLE_SYNC
+              value: "true"
+            # Startseite = Dashboard „mentolder auf einen Blick“ (Datei vom Sidecar in /tmp/dashboards).
+            - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
+              value: "/tmp/dashboards/mentolder-ueberblick.json"
             - name: GF_SERVER_ROOT_URL
               value: "https://grafana.${PROD_DOMAIN}"
         - name: grafana-sc-dashboard

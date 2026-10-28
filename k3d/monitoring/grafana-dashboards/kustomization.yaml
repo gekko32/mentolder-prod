@@ -3,6 +3,12 @@ kind: Kustomization
 namespace: monitoring
 
 configMapGenerator:
+  - name: grafana-dashboard-mentolder-ueberblick
+    files:
+      - mentolder-ueberblick.json
+    options:
+      labels:
+        grafana_dashboard: "1"
   - name: grafana-dashboard-kubernetes-overview
     files:
       - kubernetes-overview.json
