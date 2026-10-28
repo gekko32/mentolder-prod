@@ -18,3 +18,28 @@ patches:
     patch: |-
       - op: remove
         path: /spec/template/spec/imagePullSecrets
+  # WOPI-Proof-Key: Ohne /etc/coolwsd/proof_key signiert Collabora seine
+  # Anfragen an Nextcloud nicht ("Could not open proof RSA key"). Der Schluessel
+  # liegt im Secret collabora-proof-key (von Hand auf dem Server erzeugt,
+  # siehe technik/hetzner/AENDERUNGSPROTOKOLL.md, 28.10.2026). fsGroup 1001 =
+  # Gruppe von coolwsd, damit die Datei nicht fuer alle lesbar sein muss.
+  - target: { group: apps, version: v1, kind: Deployment, name: collabora }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/securityContext
+        value:
+          fsGroup: 1001
+      - op: add
+        path: /spec/template/spec/volumes
+        value:
+          - name: proof-key
+            secret:
+              secretName: collabora-proof-key
+              defaultMode: 0440
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts
+        value:
+          - name: proof-key
+            mountPath: /etc/coolwsd/proof_key
+            subPath: proof_key
+            readOnly: true
