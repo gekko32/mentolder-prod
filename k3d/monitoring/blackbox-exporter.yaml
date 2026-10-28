@@ -83,8 +83,17 @@ spec:
         - https://web.mentolder.de/api/health
         # Public production Ingress hosts.  Keep this list in sync with the
         # production Ingress manifests; G-SVC01 validates the coverage.
-        - https://design.mentolder.de
+        # design.mentolder.de entfernt (29.10.2026): seit dem Neuaufbau ohne Dienst (404).
         - https://studio.mentolder.de
+        # Geralds Dienste (29.10.2026, Dashboard „mentolder auf einen Blick“)
+        - https://files.mentolder.de/status.php
+        - https://auth.mentolder.de/.well-known/openid-configuration
+        - https://office.mentolder.de/hosting/discovery
+        - https://brett.mentolder.de/
+        - https://funk.mentolder.de/
+        - https://vault.mentolder.de/alive
+        - https://signaling.mentolder.de/api/v1/welcome
+        - https://grafana.mentolder.de/api/health
       relabelingConfigs:
         - sourceLabels: [__param_target]
           regex: https://web\.mentolder\.de/.*
