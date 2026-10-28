@@ -26,8 +26,9 @@ replicas:
     count: 0
   - name: talk-transcriber
     count: 0
+  # 28.10.2026: Aufnahme technisch bereit (Gerald). Nutzung mit Klienten nur mit Einwilligung.
   - name: talk-recording
-    count: 0
+    count: 1
   - name: bge-embed
     count: 0
   - name: bge-embed-bulk
