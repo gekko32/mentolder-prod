@@ -44,10 +44,12 @@ spec:
               value: "nextcloud"
             - name: NC_PROTOCOL
               value: "http"
+            # Nextcloud nennt dem Aufnahme-Dienst die oeffentliche Signaling-Adresse;
+            # das Geheimnis wird ueber genau diese Adresse zugeordnet (28.10.2026).
             - name: HPB_DOMAIN
-              value: "spreed-signaling:8080"
+              value: "signaling.${PROD_DOMAIN}"
             - name: HPB_PROTOCOL
-              value: "ws"
+              value: "wss"
             - name: HPB_PATH
               value: "/"
             - name: RECORDING_SECRET
