@@ -260,7 +260,9 @@ cd "$PROJECT_DIR"
   source scripts/env-resolve.sh fleet-mentolder 2>/dev/null
   apply_schema_defaults
   export COLLABORA_HOST="office.${PROD_DOMAIN}"
-  export COLLABORA_SERVER_NAME=""
+  # Ohne server_name meldet Collabora in /hosting/discovery den angefragten Host;
+  # Nextcloud fragt intern an und gab dem Browser die Cluster-Adresse (28.10.2026).
+  export COLLABORA_SERVER_NAME="office.${PROD_DOMAIN}"
   export COLLABORA_ALIASGROUP1='https://files\\.'"${PROD_DOMAIN}"':443'
   export COLLABORA_ALIASGROUP2=""
   export COLLABORA_SSL_TERMINATION="true"
