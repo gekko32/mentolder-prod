@@ -28,9 +28,33 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+      # speaches (Nachfolger von faster-whisper-server) laedt Modelle nicht selbst
+      # nach ("not installed locally"). Der Vorab-Schritt holt das Modell in den
+      # gemeinsamen HF-Cache (28.10.2026).
+      initContainers:
+        - name: modell-laden
+          image: ghcr.io/speaches-ai/speaches:0.8.3-cpu@sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-c", "from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-small')"]
+          env:
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /home/ubuntu/.cache/huggingface
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
       containers:
         - name: whisper
-          image: fedirz/faster-whisper-server@sha256:760e5e43d427dc6cfbbc4731934b908b7de9c7e6d5309c6a1f0c8c923a5b6030
+          image: ghcr.io/speaches-ai/speaches:0.8.3-cpu@sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -42,8 +66,8 @@ spec:
           # mit 4Gi/8Gi konnte Whisper Nextcloud/Collabora verdraengen. Ein zu grosses
           # Modell trifft jetzt nur diesen Pod (OOM), nicht den Knoten.
           env:
-            - name: WHISPER__MODEL
-              value: "Systran/faster-whisper-small"
+            - name: ENABLE_UI
+              value: "false"
             - name: WHISPER__COMPUTE_TYPE
               value: "int8"
           resources:
@@ -53,6 +77,9 @@ spec:
             limits:
               memory: "3Gi"
               cpu: "2"
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /home/ubuntu/.cache/huggingface
           # Model download can take a few minutes on first start
           startupProbe:
             httpGet:
@@ -66,6 +93,10 @@ spec:
               path: /health
               port: 8000
             periodSeconds: 30
+      volumes:
+        - name: hf-cache
+          emptyDir:
+            sizeLimit: 2Gi
 ---
 apiVersion: v1
 kind: Service
