@@ -55,6 +55,8 @@ env_vars:
   TURN_NODE: "gekko-hetzner-2"
   NEXTCLOUD_EXTERNAL_URL: "https://files.mentolder.de"
   AUTH_EXTERNAL_URL: "https://auth.mentolder.de"
+  # Ohne diese Adresse fehlt der Vaultwarden-Knopf im Admin-Dashboard (seit 21.10.).
+  VAULT_EXTERNAL_URL: "https://vault.mentolder.de"
   BRAIN_EXTERNAL_URL: ""
   WHITEBOARD_EXTERNAL_URL: "https://files.mentolder.de/apps/files"
   TRAEFIK_EXTERNAL_URL: "https://traefik.mentolder.de"
