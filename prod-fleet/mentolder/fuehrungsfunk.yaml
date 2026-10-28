@@ -45,8 +45,9 @@ spec:
         fsGroup: 1000
       containers:
         - name: fuehrungsfunk
+          # Der Render setzt hier den Digest von :latest ein (render.yml, 29.10.2026).
           image: ghcr.io/gekko32/fuehrungsfunk:latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8090

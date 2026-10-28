@@ -84,6 +84,7 @@ jobs:
           resolve EINVOICE_SIDECAR_IMAGE_DIGEST einvoice-sidecar
           resolve MENTOLDER_WEB_IMAGE_DIGEST mentolder-web
           resolve TALK_TRANSCRIBER_IMAGE_DIGEST talk-transcriber
+          resolve FUEHRUNGSFUNK_IMAGE_DIGEST fuehrungsfunk
           # Ein Tag je Kombination aller Image-Digests.
           tag="img-$(printf '%s' "$all" | sha256sum | cut -c1-16)"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -106,7 +107,7 @@ jobs:
             "ghcr.io/gekko32/downloads-content@${DOWNLOADS_CONTENT_IMAGE_DIGEST}" \
             "ghcr.io/gekko32/einvoice-sidecar@${EINVOICE_SIDECAR_IMAGE_DIGEST}" \
             "ghcr.io/gekko32/mentolder-web@${MENTOLDER_WEB_IMAGE_DIGEST}" \
-            "ghcr.io/gekko32/talk-transcriber@${TALK_TRANSCRIBER_IMAGE_DIGEST}")
+            "ghcr.io/gekko32/talk-transcriber@${TALK_TRANSCRIBER_IMAGE_DIGEST}" \n            "ghcr.io/gekko32/fuehrungsfunk@${FUEHRUNGSFUNK_IMAGE_DIGEST}")
           (cd prod-fleet/office && kustomize edit set image \
             "ghcr.io/gekko32/collabora-code@${COLLABORA_CODE_IMAGE_DIGEST}")
 
