@@ -38,13 +38,21 @@ spec:
               drop: ["ALL"]
           ports:
             - containerPort: 8000
+          # 28.10.2026: kleines Modell, int8, harte Speichergrenze. Die Knoten haben 8 GB;
+          # mit 4Gi/8Gi konnte Whisper Nextcloud/Collabora verdraengen. Ein zu grosses
+          # Modell trifft jetzt nur diesen Pod (OOM), nicht den Knoten.
+          env:
+            - name: WHISPER__MODEL
+              value: "Systran/faster-whisper-small"
+            - name: WHISPER__COMPUTE_TYPE
+              value: "int8"
           resources:
             requests:
-              memory: "4Gi"
-              cpu: "2"
+              memory: "1Gi"
+              cpu: "500m"
             limits:
-              memory: "8Gi"
-              cpu: "8"
+              memory: "3Gi"
+              cpu: "2"
           # Model download can take a few minutes on first start
           startupProbe:
             httpGet:

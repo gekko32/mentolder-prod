@@ -22,8 +22,10 @@ components:
 # KI-Dienste bleiben intern vorhanden, starten standardmaessig aber keine Pods.
 # Aktivierung per GitOps: count von 0 auf 1; siehe docs/runbooks/ai-services-scale-zero.md.
 replicas:
+  # 28.10.2026: Whisper fuer die Transkription von Talk-Aufnahmen in Nextcloud
+  # (Anbindung ueber die App integration_openai). talk-transcriber bleibt aus.
   - name: whisper
-    count: 0
+    count: 1
   - name: talk-transcriber
     count: 0
   # 28.10.2026: Aufnahme technisch bereit (Gerald). Nutzung mit Klienten nur mit Einwilligung.
