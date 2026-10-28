@@ -46,12 +46,13 @@ spec:
           volumeMounts:
             - name: hf-cache
               mountPath: /home/ubuntu/.cache/huggingface
+          # 512Mi reichte nicht: der Download (~480 MB) wurde OOMKilled (28.10.2026).
           resources:
             requests:
-              memory: "128Mi"
+              memory: "256Mi"
               cpu: "100m"
             limits:
-              memory: "512Mi"
+              memory: "1536Mi"
       containers:
         - name: whisper
           image: ghcr.io/speaches-ai/speaches:0.8.3-cpu@sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8
