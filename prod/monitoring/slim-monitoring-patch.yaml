@@ -11,9 +11,10 @@ metadata:
 spec:
   retention: "24h"
   retentionSize: "9GB"
+  # 768Mi/500m reichten nicht: 1090 OOMKills bis 28.10.2026, CPU dauerhaft am Limit.
   resources:
-    requests: { cpu: 100m, memory: 256Mi }
-    limits: { cpu: 500m, memory: 768Mi }
+    requests: { cpu: 200m, memory: 768Mi }
+    limits: { cpu: "1", memory: 1536Mi }
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: Alertmanager
