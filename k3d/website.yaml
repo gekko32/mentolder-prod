@@ -287,6 +287,13 @@ spec:
                 secretKeyRef:
                   name: website-secrets
                   key: SESSIONS_CRON_TOKEN
+            # Führungsfunk-Knöpfe im Admin-Dashboard (29.10.2026); optional, ohne Wert keine Knöpfe.
+            - name: FUNK_SENDE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: website-secrets
+                  key: FUNK_SENDE_TOKEN
+                  optional: true
             # WEBSITE_OIDC_SECRET (Keycloak) removed — Pocket ID is now the auth provider
             - name: POCKET_ID_WEBSITE_SECRET
               valueFrom:
