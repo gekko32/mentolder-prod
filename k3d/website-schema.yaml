@@ -76,8 +76,20 @@ data:
 
       -- Add customer_number to existing deployments
       ALTER TABLE customers ADD COLUMN IF NOT EXISTS customer_number TEXT UNIQUE;
-      UPDATE customers SET customer_number = 'M' || LPAD(nextval('customer_number_seq')::text, 4, '0') WHERE customer_number IS NULL;
-      ALTER TABLE customers ALTER COLUMN customer_number SET DEFAULT 'M' || LPAD(nextval('customer_number_seq')::text, 4, '0');
+      -- Kundennummer nie kuerzen und vergebene ueberspringen (Gerald, 29.10.2026, H18): LPAD(...,4) machte
+      -- ab 10000 aus 11161 "M1116" -> Dubletten. Dieselbe Funktion setzt die Website (src/lib/kundennummer.ts).
+      CREATE OR REPLACE FUNCTION naechste_kundennummer() RETURNS text LANGUAGE plpgsql AS $f$
+      DECLARE n bigint; k text;
+      BEGIN
+        LOOP
+          n := nextval('customer_number_seq');
+          k := 'M' || lpad(n::text, greatest(4, length(n::text)), '0');
+          EXIT WHEN NOT EXISTS (SELECT 1 FROM customers WHERE customer_number = k);
+        END LOOP;
+        RETURN k;
+      END $f$;
+      UPDATE customers SET customer_number = naechste_kundennummer() WHERE customer_number IS NULL;
+      ALTER TABLE customers ALTER COLUMN customer_number SET DEFAULT naechste_kundennummer();
 
       -- Enrollment tracking: allows admin to dismiss a pending enrollment without creating a portal account
       ALTER TABLE customers ADD COLUMN IF NOT EXISTS enrollment_declined BOOLEAN NOT NULL DEFAULT FALSE;
@@ -844,8 +856,20 @@ data:
       );
 
       ALTER TABLE customers ADD COLUMN IF NOT EXISTS customer_number TEXT UNIQUE;
-      UPDATE customers SET customer_number = 'M' || LPAD(nextval('customer_number_seq')::text, 4, '0') WHERE customer_number IS NULL;
-      ALTER TABLE customers ALTER COLUMN customer_number SET DEFAULT 'M' || LPAD(nextval('customer_number_seq')::text, 4, '0');
+      -- Kundennummer nie kuerzen und vergebene ueberspringen (Gerald, 29.10.2026, H18): LPAD(...,4) machte
+      -- ab 10000 aus 11161 "M1116" -> Dubletten. Dieselbe Funktion setzt die Website (src/lib/kundennummer.ts).
+      CREATE OR REPLACE FUNCTION naechste_kundennummer() RETURNS text LANGUAGE plpgsql AS $f$
+      DECLARE n bigint; k text;
+      BEGIN
+        LOOP
+          n := nextval('customer_number_seq');
+          k := 'M' || lpad(n::text, greatest(4, length(n::text)), '0');
+          EXIT WHEN NOT EXISTS (SELECT 1 FROM customers WHERE customer_number = k);
+        END LOOP;
+        RETURN k;
+      END $f$;
+      UPDATE customers SET customer_number = naechste_kundennummer() WHERE customer_number IS NULL;
+      ALTER TABLE customers ALTER COLUMN customer_number SET DEFAULT naechste_kundennummer();
 
       ALTER TABLE customers ADD COLUMN IF NOT EXISTS enrollment_declined BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;
