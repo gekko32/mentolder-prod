@@ -6,7 +6,7 @@ metadata:
   labels:
     release: monitoring
 spec:
-  # 29.10.2026 (Gerald): Warn-Mails wieder an, an info@mentolder.de (mailbox.org).
+  # Warn-Mails an mentolder@web.de (Gerald, 29.10.2026), Versand über info@mentolder.de (mailbox.org).
   # Nur warning/critical; Watchdog und InfoInhibitor (Dauersignale) gehen nirgends hin.
   route:
     groupBy: [alertname, namespace]
@@ -28,7 +28,7 @@ spec:
     - name: operator-email
       emailConfigs:
         - sendResolved: true
-          to: info@mentolder.de
+          to: mentolder@web.de
           from: info@mentolder.de
           smarthost: ${SMTP_HOST}:${SMTP_PORT}
           authUsername: info@mentolder.de
