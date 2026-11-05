@@ -65,6 +65,10 @@ spec:
               /
               sum by (router) (rate(traefik_router_requests_total[5m]))
             ) > 0.01
+            # Mindestmenge: bei wenig Verkehr (z. B. auth-api) lösten schon 1–3 abgebrochene Scanner-Anfragen
+            # den Alarm aus (31.10./05.11.2026). Erst ab 5 Fehlern in 5 Minuten melden.
+            and
+            sum by (router) (increase(traefik_router_requests_total{code=~"5.."}[5m])) >= 5
           for: 5m
           labels:
             severity: warning
