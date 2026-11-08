@@ -101,6 +101,8 @@ data:
   # System-test failure loop (Task 10): off by default. Flip to "true" only
   # after the rollout checklist in feat/systemtest-failure-loop has been run.
   SYSTEMTEST_LOOP_ENABLED: "${SYSTEMTEST_LOOP_ENABLED}"
+  # Hinweise an den Admin (Kontakt, Buchung, Registrierung); ohne diese Zeile kam der Schalter nie an.
+  EMAIL_NOTIFICATIONS_ENABLED: "${EMAIL_NOTIFICATIONS_ENABLED}"
 ---
 
 # ── Monitoring RBAC ──────────────────────────────────────────────────────────

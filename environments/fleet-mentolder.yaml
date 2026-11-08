@@ -88,7 +88,7 @@ env_vars:
   STUDIO_IMAGE_DIGEST: sha256:3333333333333333333333333333333333333333333333333333333333333333
   # Dev stack intentionally omitted — dev migration is Phase 2c.
   DEV_SSH_ALLOWLIST: ""
-  EMAIL_NOTIFICATIONS_ENABLED: "false"
+  EMAIL_NOTIFICATIONS_ENABLED: "true"
 
 # overlay points at the fleet wrapper (reuses prod-mentolder + deletes the
 # platform-owned cluster singletons via the fleet-common component). workspace:deploy
