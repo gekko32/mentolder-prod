@@ -36,6 +36,13 @@ spec:
             - "--allowed-group=workspace-users"
             # T002068: allow unauthenticated access to data-free routes
             - "--skip-auth-route=GET=^/healthz$|GET=^/three\\.min\\.js$"
+            # Klienten-Link (08.11.2026): nur mit 32-stelligem Schlüssel im Pfad; das Brett prüft ihn selbst.
+            - "--skip-auth-route=GET=^/k/[A-Za-z0-9_-]{32}(\\?.*)?$"
+            - "--skip-auth-route=GET=^/api/k/[A-Za-z0-9_-]{32}$"
+            - "--skip-auth-route=GET=^/sync/k/[A-Za-z0-9_-]{32}(\\?.*)?$"
+            # Programmdateien und „wer bin ich“, enthalten keine Klientendaten.
+            - "--skip-auth-route=GET=^/assets/"
+            - "--skip-auth-route=GET=^/auth/me$"
           env:
             - name: POCKET_ID_BRETT_SECRET
               valueFrom:
