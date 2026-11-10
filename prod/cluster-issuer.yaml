@@ -16,9 +16,9 @@ spec:
             groupName: lego.dns-solver
             solverName: lego-solver
             config:
-              provider: ipv64
+              provider: hetzner
               env:
-                IPV64_API_KEY:
+                HETZNER_API_TOKEN:
                   secretKeyRef:
-                    name: ipv64-api-key
-                    key: IPV64_API_KEY
+                    name: hetzner-dns-token
+                    key: HETZNER_API_TOKEN
