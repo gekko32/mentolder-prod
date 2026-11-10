@@ -1,4 +1,4 @@
-# cert-manager und der DNS-01-Webhook fuer ipv64 (lego). Im Altcluster von Hand per
+# cert-manager und der DNS-01-Webhook (lego, seit 10.11.2026 Hetzner DNS). Im Altcluster von Hand per
 # Helm installiert (task cert:install), im Render nicht enthalten. Werte wie dort
 # (Stand 2026-10-21: cert-manager v1.21.2, cert-manager-lego-webhook 1.6.2).
 apiVersion: v1
@@ -69,7 +69,7 @@ spec:
     certManager:
       namespace: cert-manager
       serviceAccountName: cert-manager
-  # Der ipv64-Provider liest den Schluessel aus der Umgebung des Webhooks, nicht aus
+  # Der Provider liest den Schluessel aus der Umgebung des Webhooks, nicht aus
   # der Solver-Konfiguration des ClusterIssuers. Im Altcluster von Hand ergaenzt
   # (Generalprobe 2026-10-21: ohne diese Variable "credentials information are missing").
   postRenderers:
@@ -82,8 +82,8 @@ spec:
               - op: add
                 path: /spec/template/spec/containers/0/env/-
                 value:
-                  name: IPV64_API_KEY
+                  name: HETZNER_API_TOKEN
                   valueFrom:
                     secretKeyRef:
-                      name: ipv64-api-key
-                      key: IPV64_API_KEY
+                      name: hetzner-dns-token
+                      key: HETZNER_API_TOKEN
