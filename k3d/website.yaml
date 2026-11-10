@@ -407,12 +407,6 @@ spec:
                 configMapKeyRef:
                   name: website-config
                   key: ARENA_WS_URL
-            - name: IPV64_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: website-secrets
-                  key: IPV64_API_KEY
-                  optional: true
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
