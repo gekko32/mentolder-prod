@@ -175,3 +175,25 @@ spec:
           annotations:
             summary: "Restore-Verifikation {{ $labels.cronjob }} seit >8 Tagen ohne Erfolg ({{ $labels.namespace }})"
             description: "Der woechentliche Restore-Verify-Lauf in {{ $labels.namespace }} war seit mehr als 8 Tagen nicht erfolgreich, oder es gab noch nie einen erfolgreichen Lauf."
+    - name: zertifikat.rules
+      rules:
+        # Zertifikate (10.11.2026): Let's Encrypt verlaengert etwa 30 Tage vor Ablauf.
+        # Unter 21 Tagen Restlaufzeit ist die Verlaengerung also seit gut einer Woche ueberfaellig.
+        # Die Daten liefert die Probe brand-public-health (Blackbox-Exporter, alle 5 Minuten).
+        - alert: ZertifikatLaeuftAb
+          expr: |
+            min by (instance) (probe_ssl_earliest_cert_expiry{job="brand-public-health"}) - time() < 21 * 86400
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Zertifikat von {{ $labels.instance }} laeuft bald ab"
+            description: "Restlaufzeit {{ $value | humanizeDuration }}. Die automatische Verlaengerung (cert-manager, DNS-Nachweis ueber Hetzner) hat offenbar nicht geklappt."
+        - alert: ZertifikatsPruefungOhneDaten
+          expr: absent(probe_ssl_earliest_cert_expiry{job="brand-public-health"})
+          for: 2h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Zertifikatspruefung liefert keine Daten"
+            description: "Ohne diese Daten warnt ZertifikatLaeuftAb nicht. Blackbox-Exporter und Probe brand-public-health pruefen."
