@@ -9,7 +9,7 @@ set -euo pipefail
 OUT=${1:?zielordner fehlt}; LIVE=${2:-}
 [ -n "${R:-}" ] || { echo "R (age.pub) fehlt"; exit 1; }
 mkdir -p "$OUT"; cd "$OUT"
-EXCL="pocket_id_korczewski videovault pentest website_massage"   # Entscheidung 2026-10-20 (LOG.md)
+EXCL="pocket_id_korczewski videovault website_massage"   # Entscheidung 2026-10-20 (LOG.md)
 log() { echo "$(date -Is) $*" | tee -a "$OUT/backup.log"; }
 
 log "start live=${LIVE:-no}"
