@@ -89,8 +89,6 @@ resources:
   # See k3d/cronjob-systemtest-cleanup.yaml.
   # LLM-Gateway (GPU-Host via Docker-Bridge / wg-mesh)
   - llm-gpu.yaml
-  # Pentest Flags (CTF)
-  - pentest-flags.yaml
   # Pocket ID — passkey-first OIDC provider on auth.<domain>, sole OIDC
   # issuer of the platform (T001068).
   - pocket-id.yaml
