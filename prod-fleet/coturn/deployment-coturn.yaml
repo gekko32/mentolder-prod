@@ -40,6 +40,10 @@ spec:
             - --use-auth-secret
             - --static-auth-secret=$(TURN_SECRET)
             - --external-ip=${TURN_PUBLIC_IP}
+            # 12.11.2026: Ohne feste Relay-Adresse rechnet Coturn Ziele auf der eigenen öffentlichen IP
+            # (Janus!) auf 0.0.0.0 um und lehnt sie ab (channel bind 403) → TURN-Klienten erreichen Janus nicht.
+            - --relay-ip=${TURN_PUBLIC_IP}
+            - --allowed-peer-ip=${TURN_PUBLIC_IP}
             - --listening-ip=0.0.0.0
             - --no-multicast-peers
             - --fingerprint
