@@ -35,6 +35,10 @@ data:
     [mcu]
     type = janus
     url = ws://janus.coturn:8188
+    # 12.11.2026: Messung zeigte Bandbreitengrenze genau 1 Mbit/s, Chrome schaltete die HD-Stufe ab.
+    # Erhöhen nur zusammen mit Janus-Neustart (talk-signaling-neustart.ps1 -MitJanus).
+    maxstreambitrate = 2097152
+    maxscreenbitrate = 4194304
 
     [turn]
     apikey = @@TURN_APIKEY@@
