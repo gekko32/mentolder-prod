@@ -37,7 +37,8 @@ data:
     url = ws://janus.coturn:8188
     # 12.11.2026: Messung zeigte Bandbreitengrenze genau 1 Mbit/s, Chrome schaltete die HD-Stufe ab.
     # Erhöhen nur zusammen mit Janus-Neustart (talk-signaling-neustart.ps1 -MitJanus).
-    maxstreambitrate = 2097152
+    # 12.11.2026 spät: 2 Mbit/s überforderte den Handy-Browser („ausgelastet“), daher 1,5 Mbit/s.
+    maxstreambitrate = 1572864
     maxscreenbitrate = 4194304
 
     [turn]
