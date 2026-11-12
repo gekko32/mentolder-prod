@@ -35,6 +35,9 @@ data:
     [mcu]
     type = janus
     url = ws://janus.coturn:8188
+    # 12.11.2026: Bildqualität (Gerald: Handybild verrauscht). Standard war 1 bzw. 2 Mbit/s.
+    maxstreambitrate = 2097152
+    maxscreenbitrate = 4194304
 
     [turn]
     apikey = @@TURN_APIKEY@@
