@@ -28,6 +28,11 @@ replicas:
     count: 0
   - name: oauth2-proxy-studio
     count: 0
+  # 13.11.2026: ntfy (Agent-Push) abgeschaltet (Gerald). Niemand nutzt es; beim Start legte es Admin-Benutzer
+  # mit festem Passwort "dev" an, und neue Token-Werte ersetzten die alten nicht. Wieder einschalten: Zaehler auf 1,
+  # vorher den Startbefehl in k3d/ntfy.yaml mit echten Zugangsdaten neu bauen.
+  - name: ntfy
+    count: 0
   # 28.10.2026: Whisper fuer die Transkription von Talk-Aufnahmen in Nextcloud
   # (Anbindung ueber die App integration_openai). talk-transcriber bleibt aus.
   - name: whisper
