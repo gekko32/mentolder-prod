@@ -243,7 +243,6 @@ metadata:
     app: recovery
 data:
   allowed-emails: |
-    patrick@korczewski.de
     quamain@web.de
 ---
 # Ingress — mirrors prod/ingress.yaml docs pattern (plain Ingress with Traefik annotations).
