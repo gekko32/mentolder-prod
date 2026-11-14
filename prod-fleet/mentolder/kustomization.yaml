@@ -28,6 +28,14 @@ replicas:
     count: 0
   - name: oauth2-proxy-studio
     count: 0
+  # 14.11.2026: Download-Dienst abgeschaltet (Gerald). Er lieferte nur rustdesk-workspace-installer.exe
+  # (gebaut 01.07., festes Passwort fuer unbeaufsichtigten Zugriff eingebacken, alter Serverschluessel).
+  # Fernhilfe laeuft ueber die offizielle RustDesk-Datei (Nextcloud). Wieder einschalten nur mit neu
+  # gebautem Installer ohne festes Passwort; dann beide Zaehler auf 1.
+  - name: downloads
+    count: 0
+  - name: oauth2-proxy-downloads
+    count: 0
   # 28.10.2026: Whisper fuer die Transkription von Talk-Aufnahmen in Nextcloud
   # (Anbindung ueber die App integration_openai). talk-transcriber bleibt aus.
   - name: whisper
