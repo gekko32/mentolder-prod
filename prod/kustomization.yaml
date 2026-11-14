@@ -80,17 +80,6 @@ patches:
       metadata:
         name: vaultwarden-seed-credentials
       $patch: delete
-  # Drop dev-placeholder ntfy-tokens — in production this secret is
-  # managed via SealedSecrets.
-  - target:
-      kind: Secret
-      name: ntfy-tokens
-    patch: |
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: ntfy-tokens
-      $patch: delete
   # Drop the k3d-only apiserver egress policy from prod output — the prod
   # apiserver endpoints live in the fleet-wg range covered by the base policy.
   - target:

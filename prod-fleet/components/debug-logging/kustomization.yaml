@@ -174,20 +174,6 @@ patches:
                   - name: MP_VERBOSE
                     value: "true"
 
-  - target: { kind: Deployment, name: ntfy }
-    patch: |-
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata: { name: ntfy }
-      spec:
-        template:
-          spec:
-            containers:
-              - name: ntfy
-                env:
-                  - name: NTFY_LOG_LEVEL
-                    value: "debug"
-
   # ── LLM-Gateways (llama.cpp server) ───────────────────────────────────────
   #     llama.cpp liest LLAMA_ARG_* als Env-Aequivalent seiner CLI-Flags, damit
   #     die bestehende args-Liste unangetastet bleibt.
