@@ -24,7 +24,6 @@ data:
   # Session-hub allow-list. Must match users' Pocket ID email addresses.
   # (Was: /session-hub-access Keycloak group — Pocket ID has no groups.)
   allowed-emails: |
-    patrick@korczewski.de
     quamain@web.de
 ---
 apiVersion: apps/v1

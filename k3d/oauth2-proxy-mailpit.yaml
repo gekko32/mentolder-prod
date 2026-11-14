@@ -12,7 +12,6 @@ metadata:
 data:
   # Admin allow-list. Must match users' Pocket ID email addresses.
   allowed-emails: |
-    patrick@korczewski.de
     quamain@web.de
 ---
 apiVersion: apps/v1
