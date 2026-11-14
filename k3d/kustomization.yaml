@@ -60,8 +60,6 @@ resources:
   - mentolder-web.yaml
   # Mediaviewer Widget
   - mediaviewer-widget.yaml
-  # Agent-Push ntfy-Server (T000991)
-  - ntfy.yaml
   - oauth2-proxy-mediaviewer.yaml
   # Sessions Server (session-<slug>.sessions.mentolder.de)
   # Website egress: allow Prometheus queries from factory-observability API
