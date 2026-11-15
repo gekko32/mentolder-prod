@@ -6,6 +6,8 @@ $CONFIG = [
         '172.16.0.0/12',
         '192.168.0.0/16',
         '127.0.0.1/32',
+        // 15.11.2026: notify-push ruft Nextcloud über http://localhost auf, das als ::1 ankommt.
+        '::1/128',
     ],
     'forwarded_for_headers' => ['HTTP_X_FORWARDED_FOR'],
 
