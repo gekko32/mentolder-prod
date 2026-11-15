@@ -35,12 +35,18 @@ jobs:
           fetch-tags: false
 
       - name: Install kustomize, flux CLI, crane, cosign
+        # 15.11.2026: Beide Installationsskripte fragen die GitHub-API nach dem Release.
+        # Ohne Anmeldung gilt dort ein Limit je Runner-IP; der Lauf scheiterte deshalb
+        # öfter mit "Github rate-limiter failed the request". Mit dem Lauf-Token gilt
+        # das höhere Limit. sudo gibt die Variable nur mit --preserve-env weiter.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           rm -f /usr/local/bin/kustomize
           curl -sSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" \
             | bash -s -- 5.4.3 /usr/local/bin
-          curl -sSL https://fluxcd.io/install.sh | sudo bash
+          curl -sSL https://fluxcd.io/install.sh | sudo --preserve-env=GITHUB_TOKEN bash
           curl -sL https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz \
             | tar -xz -C /usr/local/bin crane
           COSIGN_VERSION=3.1.3
