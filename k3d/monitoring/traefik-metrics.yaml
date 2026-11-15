@@ -26,6 +26,16 @@ spec:
       # Steht hier, weil der k3s-Chart (v41) den Schlüssel globalArguments stillschweigend übergeht.
       - "--global.checknewversion=false"
       - "--global.sendanonymoususage=false"
+      # 15.11.2026 (F16): Kopfzeilen mit Alias-Namen (z. B. X_Forwarded_For) verwerfen. PHP & Co.
+      # lesen sie wie X-Forwarded-For; so ließen sich die von Traefik gesetzten Kopfzeilen fälschen.
+      # Entfernt wird jede Kopfzeile mit anderen Zeichen als Buchstaben, Ziffern, Bindestrich.
+      - "--entryPoints.web.http.aliasHeadersStrategy=delete"
+      - "--entryPoints.websecure.http.aliasHeadersStrategy=delete"
+      - "--entryPoints.traefik.http.aliasHeadersStrategy=delete"
+      - "--entryPoints.metrics.http.aliasHeadersStrategy=delete"
+      # 15.11.2026 (F16): bisherige Namensregel ausdrücklich behalten. true würde Namen wie
+      # workspace-redirect-https@kubernetescrd ändern, auf die die Ingress-Anmerkungen verweisen.
+      - "--providers.kubernetesCRD.safeNaming=false"
     metrics:
       prometheus:
         entryPoint: metrics

@@ -149,7 +149,8 @@ spec:
                   # are substituted by envsubst during the render, so the correct values
                   # per env land here. Destinations that don't exist on a given cluster
                   # are skipped gracefully.
-                  for NS in coturn workspace-office ${WEBSITE_NAMESPACE}; do
+                  # 15.11.2026 (F12): auch monitoring (Grafana/otel-IngressRoutes verweisen darauf).
+                  for NS in coturn workspace-office monitoring ${WEBSITE_NAMESPACE}; do
                     sync_secret ${WORKSPACE_NAMESPACE} ${TLS_SECRET_NAME} ${TLS_SECRET_NAME} "$NS" || \
                       echo "warn: tls sync to $NS failed or namespace absent - skipping"
                   done
