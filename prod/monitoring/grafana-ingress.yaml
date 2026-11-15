@@ -11,6 +11,5 @@ spec:
       services:
         - name: monitoring-grafana
           port: 80
-  # 15.11.2026 (F12): ohne secretName. Das Wildcard-Geheimnis liegt nicht in monitoring;
-  # Traefik waehlt das Zertifikat per SNI aus den geladenen Secrets (wie flux-webhook).
-  tls: {}
+  tls:
+    secretName: ${TLS_SECRET_NAME}
