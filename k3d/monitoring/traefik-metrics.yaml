@@ -33,3 +33,20 @@ spec:
           default: false
         exposedPort: 9101
         protocol: TCP
+    # 15.11.2026: Traefik zweimal, auf verschiedenen Knoten. Vorher lief nur ein Pod;
+    # fiel dessen Knoten aus, waren alle Seiten weg, bis er woanders neu startete.
+    # Zertifikate kommen von cert-manager (kein ACME in Traefik), mehrere Kopien sind daher unkritisch.
+    # Ausrollen: maxSurge 1 / maxUnavailable 0 (Chart-Vorgabe), bei 3 Knoten passt die Zusatzkopie.
+    deployment:
+      replicas: 2
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: traefik
+                app.kubernetes.io/instance: traefik-kube-system
+            topologyKey: kubernetes.io/hostname
