@@ -373,6 +373,11 @@ spec:
             # $(POSTGRES_PASSWORD) setzt Kubernetes ein; die Passwörter sind hex, also URL-sicher.
             - name: DATABASE_URL
               value: "postgres://nextcloud:$(POSTGRES_PASSWORD)@nextcloud-db/nextcloud"
+            # 15.11.2026: Nextcloud direkt im selben Pod ansprechen statt über files.mentolder.de.
+            # Der Umweg über Traefik ersetzt X-Forwarded-For, dadurch scheiterte
+            # `occ notify_push:setup` am Trusted-Proxy-Test. localhost steht in trusted_domains.
+            - name: NEXTCLOUD_URL
+              value: "http://localhost"
           volumeMounts:
             - name: app
               mountPath: /var/www/html
