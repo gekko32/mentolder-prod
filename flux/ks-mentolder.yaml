@@ -38,7 +38,7 @@ spec:
     - target:
         kind: Deployment
         namespace: workspace
-        name: "^(brain|brett|downloads|einvoice-sidecar|fuehrungsfunk|mailpit|mentolder-web|nats|nextcloud|nextcloud-redis|ntfy|oauth2-proxy-brain|oauth2-proxy-brett|oauth2-proxy-downloads|oauth2-proxy-mailpit|oauth2-proxy-rustdesk-web|oauth2-proxy-session-hub|oauth2-proxy-studio|oauth2-proxy-traefik|pocket-id|sessions-server|spreed-signaling|studio-server|whiteboard)$"
+        name: "^(brain|brett|downloads|einvoice-sidecar|fuehrungsfunk|mailpit|mentolder-web|nats|nextcloud|nextcloud-redis|ntfy|oauth2-proxy-brain|oauth2-proxy-brett|oauth2-proxy-downloads|oauth2-proxy-mailpit|oauth2-proxy-rustdesk-web|oauth2-proxy-session-hub|oauth2-proxy-traefik|pocket-id|sessions-server|spreed-signaling|whiteboard)$"
       patch: |
         - op: add
           path: /spec/replicas

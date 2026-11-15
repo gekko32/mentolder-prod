@@ -84,7 +84,6 @@ spec:
         # Public production Ingress hosts.  Keep this list in sync with the
         # production Ingress manifests; G-SVC01 validates the coverage.
         # design.mentolder.de entfernt (29.10.2026): seit dem Neuaufbau ohne Dienst (404).
-        - https://studio.mentolder.de
         # Geralds Dienste (29.10.2026, Dashboard „mentolder auf einen Blick“)
         - https://files.mentolder.de/status.php
         - https://auth.mentolder.de/.well-known/openid-configuration

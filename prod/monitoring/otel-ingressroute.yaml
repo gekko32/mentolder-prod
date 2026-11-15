@@ -18,5 +18,5 @@ spec:
       services:
         - name: otel-collector
           port: 4318
-  tls:
-    secretName: ${TLS_SECRET_NAME}
+  # 15.11.2026 (F12): ohne secretName, siehe grafana-ingress.yaml.
+  tls: {}

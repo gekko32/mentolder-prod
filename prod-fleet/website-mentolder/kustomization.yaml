@@ -14,6 +14,16 @@ patches:
       kind: Deployment
       name: website
     path: website-patch.yaml
+  # 15.11.2026 (F11): Die Basis-IngressRoute `website` (Entrypoint web) zeigt in Prod auf einen
+  # leeren Dienstnamen (WEBSITE_PRIMARY_SERVICE ist hier nicht gesetzt), Traefik meldet laufend
+  # "service not found". Die Website laeuft ueber website-ingress-web.yaml.
+  - target: { group: traefik.io, version: v1alpha1, kind: IngressRoute, name: website }
+    patch: |-
+      $patch: delete
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: website
   # Egress zum GPU-Entwicklungshost (192.168.100.0/24) gehoert nicht in Prod.
   - target: { group: networking.k8s.io, version: v1, kind: NetworkPolicy, name: allow-llm-egress }
     patch: |-

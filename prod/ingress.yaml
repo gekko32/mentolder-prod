@@ -3,28 +3,43 @@
 # ═══════════════════════════════════════════════════════════════════
 
 # ── Apex Domain → web.PROD_DOMAIN (permanent redirect) ─────────────
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+# 15.11.2026 (F13): Die Middleware redirect-apex-to-web leitet jede Anfrage um, ein
+# Ziel dahinter wird nie erreicht. Frueher stand hier der alte Webspace 185.30.32.28
+# (old-webspace); jetzt das interne Leer-Ziel von Traefik. Zwei Routen, weil eine
+# IngressRoute mit TLS nicht zugleich unverschluesselt auf Port 80 antworten kann.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
 metadata:
   name: workspace-ingress-apex
-  annotations:
-    traefik.ingress.kubernetes.io/router.middlewares: "${WORKSPACE_NAMESPACE}-redirect-https@kubernetescrd,${WORKSPACE_NAMESPACE}-redirect-apex-to-web@kubernetescrd,${WORKSPACE_NAMESPACE}-hsts-headers@kubernetescrd,${WORKSPACE_NAMESPACE}-security-headers@kubernetescrd"
 spec:
+  entryPoints: [websecure]
+  routes:
+    - match: Host(`${PROD_DOMAIN}`)
+      kind: Rule
+      middlewares:
+        - name: redirect-apex-to-web
+        - name: hsts-headers
+        - name: security-headers
+      services:
+        - name: noop@internal
+          kind: TraefikService
   tls:
-    - hosts:
-        - ${PROD_DOMAIN}
-      secretName: ${TLS_SECRET_NAME}
-  rules:
-    - host: ${PROD_DOMAIN}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: old-webspace
-                port:
-                  number: 443
+    secretName: ${TLS_SECRET_NAME}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: workspace-ingress-apex-http
+spec:
+  entryPoints: [web]
+  routes:
+    - match: Host(`${PROD_DOMAIN}`)
+      kind: Rule
+      middlewares:
+        - name: redirect-apex-to-web
+      services:
+        - name: noop@internal
+          kind: TraefikService
 ---
 # ── Pocket ID (Auth / SSO) — API: Rate-Limiting (Brute-Force-Schutz) ─
 # T001430: rate-limit-auth NUR auf /api scopen, nicht auf die gesamte

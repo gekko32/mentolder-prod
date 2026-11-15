@@ -9,14 +9,12 @@ on:
     branches: [main]
     paths:
       - components/mentolder-web/**
-      - components/studio-server/**
       - docker/einvoice-sidecar/**
       - k3d/talk-transcriber/**
       - .github/workflows/build-images.yml
   pull_request:
     paths:
       - components/mentolder-web/**
-      - components/studio-server/**
       - docker/einvoice-sidecar/**
       - k3d/talk-transcriber/**
       - .github/workflows/build-images.yml
@@ -41,9 +39,6 @@ jobs:
           - image: mentolder-web
             context: .
             file: components/mentolder-web/Dockerfile
-          - image: studio-server
-            context: components/studio-server
-            file: components/studio-server/Dockerfile
           - image: einvoice-sidecar
             context: docker/einvoice-sidecar
             file: docker/einvoice-sidecar/Dockerfile
