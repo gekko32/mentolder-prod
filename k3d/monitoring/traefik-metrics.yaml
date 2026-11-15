@@ -50,3 +50,9 @@ spec:
                 app.kubernetes.io/name: traefik
                 app.kubernetes.io/instance: traefik-kube-system
             topologyKey: kubernetes.io/hostname
+    # 15.11.2026: Traefik meldet sich nicht mehr bei traefik.io. Die Versionsprüfung
+    # („Version check is enabled … collects usage data“) war aktiv, die Statistik schon aus;
+    # beides jetzt ausdrücklich abgeschaltet.
+    globalArguments:
+      - "--global.checknewversion=false"
+      - "--global.sendanonymoususage=false"
