@@ -366,6 +366,13 @@ spec:
                 secretKeyRef:
                   name: workspace-secrets
                   key: NEXTCLOUD_DB_PASSWORD
+            # 15.11.2026: notify_push kann getenv() aus zz-db.config.php nicht auswerten und nahm
+            # das Passwort aus config.php. Nach einem DB-Passworttausch stand dort der alte Wert,
+            # notify-push startete nicht (Nextcloud 13.11. ~13 min 503). DATABASE_URL überschreibt
+            # nur die DB-Angabe aus config.php (am Server mit --dump-config geprüft, v1.4.2).
+            # $(POSTGRES_PASSWORD) setzt Kubernetes ein; die Passwörter sind hex, also URL-sicher.
+            - name: DATABASE_URL
+              value: "postgres://nextcloud:$(POSTGRES_PASSWORD)@nextcloud-db/nextcloud"
           volumeMounts:
             - name: app
               mountPath: /var/www/html
