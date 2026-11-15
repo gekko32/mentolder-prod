@@ -44,7 +44,10 @@ data:
     EOSQL
 
     # Sync passwords to match current secrets (works on first run and re-runs)
+    # 15.11.2026: track_utility für diese Sitzung aus, sonst stehen die Passwörter im
+    # Klartext in pg_stat_statements (lesbar für alle mit pg_read_all_stats).
     psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+      -c "SET pg_stat_statements.track_utility = off;" \
       -c "ALTER USER nextcloud WITH PASSWORD '$${NEXTCLOUD_DB_PASSWORD}';" \
       -c "ALTER USER vaultwarden WITH PASSWORD '$${VAULTWARDEN_DB_PASSWORD}';" \
       -c "ALTER USER website WITH PASSWORD '$${WEBSITE_DB_PASSWORD}';" \
@@ -232,7 +235,10 @@ spec:
                       psql -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1 \
                         || psql -U postgres -c "CREATE DATABASE \"$$db\" OWNER \"$$db\";"
                     done
+                    # 15.11.2026: track_utility für diese Sitzung aus, sonst stehen die
+                    # Passwörter im Klartext in pg_stat_statements (lesbar mit pg_read_all_stats).
                     psql -U postgres \
+                      -c "SET pg_stat_statements.track_utility = off;" \
                       -c "ALTER USER nextcloud WITH PASSWORD '$${NEXTCLOUD_DB_PASSWORD}';" \
                       -c "ALTER USER vaultwarden WITH PASSWORD '$${VAULTWARDEN_DB_PASSWORD}';" \
                       -c "ALTER USER website WITH PASSWORD '$${WEBSITE_DB_PASSWORD}';" \
