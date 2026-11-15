@@ -322,7 +322,8 @@ spec:
               memory: 64Mi
             limits:
               memory: 256Mi
-        # ── notify_push sidecar: iOS VoIP wakeup push daemon ────────
+        # ── notify_push sidecar: meldet Datei-/Talk-Änderungen sofort an Clients ──
+        # (statt dass Desktop/Handy-Apps in Abständen nachfragen)
         # Waits until occ app:install notify_push has placed the binary,
         # then runs it. Reads DB + Redis config from the shared app PVC.
         # Apache in the main container proxies /push/ → localhost:7867.
