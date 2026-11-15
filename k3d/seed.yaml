@@ -123,8 +123,6 @@ spec:
               valueFrom: { secretKeyRef: { name: workspace-secrets, key: POCKET_ID_MEDIAVIEWER_SECRET, optional: true } }
             - name: SECRET_videovault
               valueFrom: { secretKeyRef: { name: workspace-secrets, key: POCKET_ID_VIDEOVAULT_SECRET, optional: true } }
-            - name: SECRET_studio
-              valueFrom: { secretKeyRef: { name: workspace-secrets, key: POCKET_ID_STUDIO_SECRET, optional: true } }
             - name: SECRET_traefik
               valueFrom: { secretKeyRef: { name: workspace-secrets, key: POCKET_ID_TRAEFIK_SECRET, optional: true } }
             - name: SECRET_recovery
@@ -181,7 +179,6 @@ spec:
               comfy|SECRET_comfy|POCKET_ID_COMFY_SECRET|${SCHEME}://comfy.${SUFFIX}/oauth2/callback
               mediaviewer-widget|SECRET_mediaviewer|POCKET_ID_MEDIAVIEWER_SECRET|${SCHEME}://mediaviewer.${SUFFIX}/oauth2/callback
               videovault|SECRET_videovault|POCKET_ID_VIDEOVAULT_SECRET|${SCHEME}://videovault.${SUFFIX}/oauth2/callback
-              studio|SECRET_studio|POCKET_ID_STUDIO_SECRET|${SCHEME}://studio.${SUFFIX}/oauth2/callback
               traefik-dashboard|SECRET_traefik|POCKET_ID_TRAEFIK_SECRET|${SCHEME}://traefik.${SUFFIX}/oauth2/callback
               recovery|SECRET_recovery|POCKET_ID_RECOVERY_SECRET|${SCHEME}://recover.${SUFFIX}/oauth2/callback
               session-hub|SECRET_sessionhub|POCKET_ID_SESSION_HUB_SECRET|${SCHEME}://session-hub.${SUFFIX}/oauth2/callback

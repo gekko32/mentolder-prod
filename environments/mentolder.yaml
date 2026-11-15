@@ -80,9 +80,6 @@ env_vars:
   LLM_EMBED_URL: "http://llm-proxy.workspace-dev.svc.cluster.local:18235"
   LLM_EMBED_MODEL: "bge-m3"
 
-  STUDIO_DOMAIN: studio.mentolder.de
-  STUDIO_IMAGE: ghcr.io/gekko32/studio-server
-  STUDIO_IMAGE_DIGEST: sha256:3333333333333333333333333333333333333333333333333333333333333333
   # ── Dev stack (dev.mentolder.de) ─────────────────────────────────────
   DEV_DOMAIN: "dev.mentolder.de"
   DEV_NODE: "dev-vm"

@@ -15,7 +15,6 @@ resources:
   - ingressclass.yaml
   - traefik-middlewares.yaml
   - tlsoption.yaml
-  - old-webspace.yaml
   - ingress.yaml
   - traefik-dashboard.yaml
   - mail-ingressroute.yaml
@@ -147,7 +146,6 @@ patches:
   - path: patch-oauth2-proxy-brett-deployment.yaml
   - path: patch-oauth2-proxy-videovault-deployment.yaml
   - path: patch-oauth2-proxy-rustdesk-web-deployment.yaml
-  - path: patch-oauth2-proxy-studio-deployment.yaml
   - path: patch-oauth2-proxy-mediaviewer-deployment.yaml
   - path: patch-brett.yaml
   - path: patch-oauth2-proxy-comfy-deployment.yaml

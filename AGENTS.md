@@ -41,7 +41,6 @@ keine Staging-Stufe dazwischen. Behandle jede Änderung als Produktionsänderung
    ```bash
    export WEBSITE_IMAGE_DIGEST=$(crane digest ghcr.io/gekko32/website:latest)
    export BRETT_IMAGE_DIGEST=$(crane digest ghcr.io/gekko32/brett:latest)
-   export STUDIO_IMAGE_DIGEST=$(crane digest ghcr.io/gekko32/studio-server:latest)
    CI=true bash scripts/flux-render-artifact.sh --out /tmp/out
    grep -rc 'ghcr.io/paddione' /tmp/out   # muss 0 sein
    ```

@@ -11,7 +11,6 @@ kind: Kustomization
 resources:
   - ../../prod-mentolder
   - ../../prod/monitoring
-  - studio-ingress.yaml
   - fuehrungsfunk.yaml
 components:
   - ../components/fleet-common
@@ -22,12 +21,6 @@ components:
 # KI-Dienste bleiben intern vorhanden, starten standardmaessig aber keine Pods.
 # Aktivierung per GitOps: count von 0 auf 1; siehe docs/runbooks/ai-services-scale-zero.md.
 replicas:
-  # 13.11.2026: Coaching Studio abgeschaltet (Gerald). Die Oberflaeche lieferte nur "Cannot GET /",
-  # die KI-Dienste dahinter sind aus. Wieder einschalten: beide Zaehler auf 1.
-  - name: studio-server
-    count: 0
-  - name: oauth2-proxy-studio
-    count: 0
   # 14.11.2026: Download-Dienst abgeschaltet (Gerald). Er lieferte nur rustdesk-workspace-installer.exe
   # (gebaut 01.07., festes Passwort fuer unbeaufsichtigten Zugriff eingebacken, alter Serverschluessel).
   # Fernhilfe laeuft ueber die offizielle RustDesk-Datei (Nextcloud). Wieder einschalten nur mit neu
@@ -71,10 +64,7 @@ patches:
   # T016544: bge-hosts-patch.yaml ist entfallen — die llm-gateway-IngressRoutes
   # werden per $patch:delete unten entfernt; ein Patch ohne Ziel wuerde den Build
   # fehlschlagen lassen.
-  # Coaching Studio — prod overlay for mentolder brand on the fleet
-  # cluster. Pins image-digest, prod-issuer, prod TLS, and node-affinity
-  # for fleet pk nodes. (T001002)
-  - path: studio-patch.yaml
+  # 15.11.2026: Coaching Studio (T001002) ganz entfernt (Gerald), Idee in technik/hetzner OFFENE-PUNKTE 25.
   # Brett prod patch
   - target:
       kind: Deployment
@@ -354,13 +344,6 @@ patches:
       kind: IngressRoute
       metadata:
         name: mailpit-dev
-  - target: { group: traefik.io, version: v1alpha1, kind: IngressRoute, name: studio-localhost }
-    patch: |-
-      $patch: delete
-      apiVersion: traefik.io/v1alpha1
-      kind: IngressRoute
-      metadata:
-        name: studio-localhost
   - target: { group: traefik.io, version: v1alpha1, kind: IngressRoute, name: traefik-dashboard-dev }
     patch: |-
       $patch: delete
@@ -393,24 +376,12 @@ patches:
         name: wg-only
 
   # www.mentolder.de wie die Apex-Domain auf web.mentolder.de umleiten (vorher 404).
-  - target: { group: networking.k8s.io, version: v1, kind: Ingress, name: workspace-ingress-apex }
+  # 15.11.2026 (F13): Apex ist jetzt eine IngressRoute (ohne alten Webspace), www kommt in die Regel.
+  - target: { group: traefik.io, version: v1alpha1, kind: IngressRoute, name: "workspace-ingress-apex(-http)?" }
     patch: |-
-      - op: add
-        path: /spec/rules/-
-        value:
-          host: www.mentolder.de
-          http:
-            paths:
-              - path: /
-                pathType: Prefix
-                backend:
-                  service:
-                    name: old-webspace
-                    port:
-                      number: 443
-      - op: add
-        path: /spec/tls/0/hosts/-
-        value: www.mentolder.de
+      - op: replace
+        path: /spec/routes/0/match
+        value: Host(`mentolder.de`) || Host(`www.mentolder.de`)
   - target: { group: traefik.io, version: v1alpha1, kind: Middleware, name: redirect-apex-to-web }
     patch: |-
       - op: replace

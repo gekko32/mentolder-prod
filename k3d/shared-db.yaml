@@ -39,7 +39,6 @@ data:
         IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'vaultwarden') THEN CREATE USER vaultwarden; END IF;
         IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'website') THEN CREATE USER website; END IF;
         IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'pocket_id') THEN CREATE USER pocket_id; END IF;
-        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'mcp_readonly') THEN CREATE ROLE mcp_readonly LOGIN NOSUPERUSER; END IF;
       END $$;
     EOSQL
 
@@ -51,10 +50,9 @@ data:
       -c "ALTER USER nextcloud WITH PASSWORD '$${NEXTCLOUD_DB_PASSWORD}';" \
       -c "ALTER USER vaultwarden WITH PASSWORD '$${VAULTWARDEN_DB_PASSWORD}';" \
       -c "ALTER USER website WITH PASSWORD '$${WEBSITE_DB_PASSWORD}';" \
-      -c "ALTER USER pocket_id WITH PASSWORD '$${POCKET_ID_DB_PASSWORD}';" \
-      -c "ALTER ROLE mcp_readonly SET default_transaction_read_only = on;" \
-      -c "GRANT pg_read_all_data TO mcp_readonly;" \
+      -c "ALTER USER pocket_id WITH PASSWORD '$${POCKET_ID_DB_PASSWORD}';"
 
+    # 15.11.2026: mcp_readonly entfernt (kein Verwender, hatte pg_read_all_data).
     # 15.11.2026: videovault, website_massage, pocket_id_korczewski entfernt (leer, ohne Dienst;
     # Massage/korczewski beim Neuaufbau 2026-10-21 nicht übernommen, Videovault nur noch Dev).
 
@@ -229,7 +227,6 @@ spec:
                       IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='vaultwarden') THEN CREATE USER vaultwarden; END IF;
                       IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='website')     THEN CREATE USER website;     END IF;
                       IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='pocket_id')  THEN CREATE USER pocket_id;  END IF;
-                      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='mcp_readonly') THEN CREATE ROLE mcp_readonly LOGIN NOSUPERUSER; END IF;
                     END $$;"
                     for db in nextcloud vaultwarden website pocket_id; do
                       psql -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1 \
@@ -244,9 +241,7 @@ spec:
                       -c "ALTER USER nextcloud WITH PASSWORD '$${NEXTCLOUD_DB_PASSWORD}';" \
                       -c "ALTER USER vaultwarden WITH PASSWORD '$${VAULTWARDEN_DB_PASSWORD}';" \
                       -c "ALTER USER website WITH PASSWORD '$${WEBSITE_DB_PASSWORD}';" \
-                      -c "ALTER USER pocket_id WITH PASSWORD '$${POCKET_ID_DB_PASSWORD}';" \
-                      -c "ALTER ROLE mcp_readonly SET default_transaction_read_only = on;" \
-                      -c "GRANT pg_read_all_data TO mcp_readonly;"
+                      -c "ALTER USER pocket_id WITH PASSWORD '$${POCKET_ID_DB_PASSWORD}';"
                     for ext_db in website vaultwarden pocket_id; do
                       psql -U postgres -d "$$ext_db" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null || true
                     done

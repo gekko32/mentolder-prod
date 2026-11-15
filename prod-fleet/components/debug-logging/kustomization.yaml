@@ -68,20 +68,6 @@ patches:
                   - name: PINO_LOG_LEVEL
                     value: "debug"
 
-  - target: { kind: Deployment, name: studio-server }
-    patch: |-
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata: { name: studio-server }
-      spec:
-        template:
-          spec:
-            containers:
-              - name: studio-server
-                env:
-                  - name: LOG_LEVEL
-                    value: "debug"
-
   - target: { kind: Deployment, name: einvoice-sidecar }
     patch: |-
       apiVersion: apps/v1
@@ -312,25 +298,6 @@ patches:
       apiVersion: apps/v1
       kind: Deployment
       metadata: { name: oauth2-proxy-rustdesk-web }
-      spec:
-        template:
-          spec:
-            containers:
-              - name: oauth2-proxy
-                env:
-                  - name: OAUTH2_PROXY_STANDARD_LOGGING
-                    value: "true"
-                  - name: OAUTH2_PROXY_AUTH_LOGGING
-                    value: "true"
-                  - name: OAUTH2_PROXY_REQUEST_LOGGING
-                    value: "true"
-                  - name: OAUTH2_PROXY_SILENCE_PING_LOGGING
-                    value: "true"
-  - target: { kind: Deployment, name: oauth2-proxy-studio }
-    patch: |-
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata: { name: oauth2-proxy-studio }
       spec:
         template:
           spec:

@@ -84,7 +84,6 @@ jobs:
           all=""
           resolve WEBSITE_IMAGE_DIGEST website
           resolve BRETT_IMAGE_DIGEST brett
-          resolve STUDIO_IMAGE_DIGEST studio-server
           resolve COLLABORA_CODE_IMAGE_DIGEST collabora-code
           resolve DOWNLOADS_CONTENT_IMAGE_DIGEST downloads-content
           resolve EINVOICE_SIDECAR_IMAGE_DIGEST einvoice-sidecar
@@ -107,7 +106,7 @@ jobs:
         if: steps.digests.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          # Nur im CI-Arbeitsbaum, nicht committet. STUDIO_IMAGE_DIGEST geht ueber die
+          # Nur im CI-Arbeitsbaum, nicht committet. Digests gehen ueber die
           # Umgebung (envsubst), website/brett ebenso.
           (cd prod-fleet/mentolder && kustomize edit set image \
             "ghcr.io/gekko32/downloads-content@${DOWNLOADS_CONTENT_IMAGE_DIGEST}" \

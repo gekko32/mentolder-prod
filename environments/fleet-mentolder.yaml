@@ -83,9 +83,6 @@ env_vars:
   LLM_RERANKER_URL: "http://llm-gateway-rerank.workspace.svc.cluster.local:8081"
   LLM_EMBED_URL: "http://llm-gateway-embed.workspace.svc.cluster.local:8081"
 
-  STUDIO_DOMAIN: studio.mentolder.de
-  STUDIO_IMAGE: ghcr.io/gekko32/studio-server
-  STUDIO_IMAGE_DIGEST: sha256:3333333333333333333333333333333333333333333333333333333333333333
   # Dev stack intentionally omitted — dev migration is Phase 2c.
   DEV_SSH_ALLOWLIST: ""
   EMAIL_NOTIFICATIONS_ENABLED: "true"
