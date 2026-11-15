@@ -237,6 +237,8 @@ spec:
                     done
                     # 15.11.2026: track_utility für diese Sitzung aus, sonst stehen die
                     # Passwörter im Klartext in pg_stat_statements (lesbar mit pg_read_all_stats).
+                    # 15.11.2026: website bekommt pg_read_all_stats nicht mehr (nichts im Code nutzt
+                    # die Statistik); im laufenden Betrieb einmal mit REVOKE entzogen.
                     psql -U postgres \
                       -c "SET pg_stat_statements.track_utility = off;" \
                       -c "ALTER USER nextcloud WITH PASSWORD '$${NEXTCLOUD_DB_PASSWORD}';" \
@@ -244,8 +246,7 @@ spec:
                       -c "ALTER USER website WITH PASSWORD '$${WEBSITE_DB_PASSWORD}';" \
                       -c "ALTER USER pocket_id WITH PASSWORD '$${POCKET_ID_DB_PASSWORD}';" \
                       -c "ALTER ROLE mcp_readonly SET default_transaction_read_only = on;" \
-                      -c "GRANT pg_read_all_data TO mcp_readonly;" \
-                      -c "GRANT pg_read_all_stats TO website;"
+                      -c "GRANT pg_read_all_data TO mcp_readonly;"
                     for ext_db in website vaultwarden pocket_id; do
                       psql -U postgres -d "$$ext_db" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>/dev/null || true
                     done
