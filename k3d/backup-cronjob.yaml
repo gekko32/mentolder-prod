@@ -250,7 +250,10 @@ spec:
                   # prompt forever — der timeout unten verwandelt diesen Hang in einen
                   # sichtbaren Fehler statt 2h Deadline-Tod [T013037].
                   UPLOAD_TIMEOUT="$${FILEN_UPLOAD_TIMEOUT:-1800}"
-                  if ! timeout "$${UPLOAD_TIMEOUT}" filen --email "$${FILEN_EMAIL}" --password "$${FILEN_PASSWORD}" \
+                  # Anmeldung über die Umgebungsvariablen FILEN_EMAIL/FILEN_PASSWORD,
+                  # die die CLI selbst liest – nicht als Argument (sonst in der
+                  # Prozessliste sichtbar). Probe 17.11.2026 mit 0.0.39: ok.
+                  if ! timeout "$${UPLOAD_TIMEOUT}" filen \
                        upload "/backups/$${STAMP}/" "$${UPLOAD_PATH}/$${STAMP}/"; then
                     echo "ERROR: Filen remote upload failed for $${STAMP} — the LOCAL encrypted backup on backup-pvc is intact."
                     echo "       Likely cause: invalid FILEN_EMAIL/FILEN_PASSWORD, 2FA enabled on the account (requires 2FA OFF),"
@@ -269,14 +272,15 @@ spec:
                   # ("Maximum storage reached", Vorgeschichte T013037). Behalte
                   # nur die neuesten N Generationen unter UPLOAD_PATH. CLI-
                   # Mechanik laut T013037-Messung: jeder Aufruf ist ein Login
-                  # (~30/min Limit → sleep-Throttle), trash-empty/trash-delete
-                  # hängen (nur Soft-Delete via rm -y), jeder Call braucht ein
-                  # timeout (CLI kann stallen).
+                  # (~30/min Limit → sleep-Throttle), jeder Call braucht ein
+                  # timeout (CLI kann stallen). Endgültig löschen mit
+                  # `rm -y --no-trash`: die CLI fragt dabei trotz -y nochmals
+                  # „Are you sure?“, darum `echo y |` (Probe 17.11.2026). Vorher
+                  # landeten gelöschte Stände im Papierkorb und füllten das Konto.
                   RETENTION="$${FILEN_REMOTE_RETENTION:-14}"
                   PRUNE_FAILED=0
                   echo "Remote retention: listing $${UPLOAD_PATH} ..."
                   if timeout 120 filen --skip-update --no-autocomplete \
-                       --email "$${FILEN_EMAIL}" --password "$${FILEN_PASSWORD}" \
                        ls "$${UPLOAD_PATH}" > /tmp/remote-ls.txt 2>/dev/null; then
                     # Streng auf Generierungs-Muster begrenzt (db-Stamps und
                     # pvc--Stamps) — alles andere im Verzeichnis wird nie
@@ -294,9 +298,8 @@ spec:
                       # in einer Subshell und verliert FAILS/PRUNE_FAILED.
                       while IFS= read -r GEN; do
                         [ -z "$${GEN}" ] && continue
-                        if timeout 90 filen --skip-update --no-autocomplete \
-                             --email "$${FILEN_EMAIL}" --password "$${FILEN_PASSWORD}" \
-                             rm -y "$${UPLOAD_PATH}/$${GEN}"; then
+                        if echo y | timeout 90 filen --skip-update --no-autocomplete \
+                             rm -y --no-trash "$${UPLOAD_PATH}/$${GEN}"; then
                           echo "  pruned old generation: $${GEN}"
                         else
                           echo "ERROR: prune failed for $${UPLOAD_PATH}/$${GEN}"
