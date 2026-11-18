@@ -103,16 +103,11 @@ spec:
   policyTypes:
   - Egress
   egress:
-  # CP-Node-IPs = apiserver-Endpoints nach DNAT (fleet wg-fleet-Subnet;
-  # T016533: + privates Hetzner-Netz — gekko ohne WG, DNAT-Ziele sind
-  # 192.168.200.2-4:6443; ohne diese Regel lehnt kube-router Pod→API ab
-  # und tls-sync/pvc-backup (kubectl im Job) bleiben rot).
-  - to:
-    - ipBlock:
-        cidr: 10.20.0.0/24
-    ports:
-    - protocol: TCP
-      port: 6443
+  # CP-Node-IPs = apiserver-Endpoints nach DNAT: privates Hetzner-Netz,
+  # DNAT-Ziele sind 192.168.200.2-4:6443 (T016533); ohne diese Regel lehnt
+  # kube-router Pod→API ab und tls-sync/pvc-backup (kubectl im Job) bleiben rot.
+  # Das alte wg-fleet-Netz 10.20.0.0/24 gibt es seit dem Neuaufbau 21.10.2026
+  # nicht mehr (A70, 18.11.2026 entfernt).
   - to:
     - ipBlock:
         cidr: 192.168.200.0/24
@@ -154,12 +149,10 @@ spec:
       port: 8083
     - protocol: TCP
       port: 8189
-  # Kubernetes API Server (ClusterIP + Node-IPs)
+  # Kubernetes API Server (ClusterIP; Node-IPs regelt allow-apiserver-egress)
   - to:
     - ipBlock:
         cidr: ${SERVICE_CIDR}
-    - ipBlock:
-        cidr: 10.20.0.0/24
     ports:
     - protocol: TCP
       port: 443
@@ -331,12 +324,6 @@ spec:
       protocol: TCP
   - to:
     - ipBlock:
-        cidr: 10.20.0.0/24    # fleet wg-mesh node IPs (Janus hostNetwork on a fleet CP node)
-    ports:
-    - port: 8188
-      protocol: TCP
-  - to:
-    - ipBlock:
         cidr: 192.168.200.0/24    # T016533: Fleet-Privatnetz (Janus hostNetwork-CP nach DNAT)
     ports:
     - port: 8188
@@ -367,19 +354,6 @@ spec:
   - from:
     - ipBlock:
         cidr: 172.19.0.0/16
-    ports:
-    - port: 21115
-      protocol: TCP
-    - port: 21116
-      protocol: TCP
-    - port: 21116
-      protocol: UDP
-    - port: 21118
-      protocol: TCP
-  # wg-mesh node IPs (fleet)
-  - from:
-    - ipBlock:
-        cidr: 10.20.0.0/24
     ports:
     - port: 21115
       protocol: TCP
