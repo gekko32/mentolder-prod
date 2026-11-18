@@ -104,9 +104,6 @@ setup_vars:
   KC_USER1_USERNAME: gekko
   KC_USER1_EMAIL: quamain@web.de
   KC_USER1_PASSWORD: SEALED
-  KC_USER2_USERNAME: paddione
-  KC_USER2_EMAIL: patrick@korczewski.de
-  KC_USER2_PASSWORD: SEALED
   # wg-mesh Hetzner CP keys — private keys sealed in .secrets/mentolder.yaml
   WG_MESH_GEKKO2_PRIVATE_KEY: SEALED
   WG_MESH_GEKKO2_PUBLIC_KEY: "iXnGP9bIwrofD6a96D5Fz5rM7smbIAc3gXJcUx5m6j0="

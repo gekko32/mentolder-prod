@@ -8,11 +8,11 @@ spec:
   retryInterval: 2m
   timeout: 10m
   dependsOn:
-    # Cluster-Infrastruktur bleibt in Paddione/Bachelorprojekt.
+    # Cluster-Infrastruktur: eigene Flux-Kustomization (Stand 18.11.2026 nur gekko32-Quellen).
     - name: flux-infra-controllers
       namespace: flux-system
     # Secrets VOR dem Brand-Stack reconcilen (Race bei neuem Secret-Key). Die SealedSecrets
-    # gehoeren zum Cluster und bleiben in Paddione/Bachelorprojekt.
+    # gehoeren zum Cluster (Quelle seit Neuaufbau 21.10.2026 nicht mehr Paddione/Bachelorprojekt).
     - name: flux-sealed-secrets-mentolder
       namespace: flux-system
   serviceAccountName: gekko-mentolder-deploy

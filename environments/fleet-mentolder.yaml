@@ -99,9 +99,6 @@ setup_vars:
   KC_USER1_USERNAME: gekko
   KC_USER1_EMAIL: quamain@web.de
   KC_USER1_PASSWORD: SEALED
-  KC_USER2_USERNAME: paddione
-  KC_USER2_EMAIL: patrick@korczewski.de
-  KC_USER2_PASSWORD: SEALED
   # wg-mesh fleet CP keys — private keys sealed in .secrets/fleet-mentolder.yaml
   WG_MESH_PK4_PRIVATE_KEY: SEALED
   WG_MESH_PK4_PUBLIC_KEY: "WkEiNOdF3D66KVnGRMHdtnWZV/Czr6hlwpTE/u3ZxRE="
