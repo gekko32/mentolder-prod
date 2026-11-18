@@ -385,7 +385,10 @@ spec:
                   # the reader and streamed into the writer, so volumes on
                   # different nodes never have to be mounted together. [T901105]
                   stream_volume() {
-                    LABEL="$1"; CLAIM="$2"; OUT="$3"
+                    # Optional 4th arg: what to archive below /data (default: everything).
+                    # Used for nextcloud-app: only config/ plus each app's info.xml (exact
+                    # versions for a reinstall), not the 2 GB program tree. [A25, 18.11.2026]
+                    LABEL="$1"; CLAIM="$2"; OUT="$3"; SUBS="$${4:-.}"
                     RJOB="pvc-backup-read-$${LABEL}-$${STAMP}"
                     echo "Backing up $${LABEL} (claim $${CLAIM}) via reader $${RJOB}..."
                     kubectl -n "$NS" apply -f - <<READER
@@ -449,7 +452,7 @@ spec:
                     fi
                     rm -f /tmp/reader-rc
                     {
-                      if kubectl -n "$NS" exec "$RPOD" -- bash -c 'set -o pipefail; tar czf - -C /data . | openssl enc -aes-256-cbc -salt -pbkdf2 -pass env:BACKUP_PASSPHRASE'; then
+                      if kubectl -n "$NS" exec "$RPOD" -- bash -c "set -o pipefail; cd /data && tar czf - $${SUBS} | openssl enc -aes-256-cbc -salt -pbkdf2 -pass env:BACKUP_PASSPHRASE"; then
                         echo 0 > /tmp/reader-rc
                       else
                         echo 1 > /tmp/reader-rc
@@ -471,6 +474,20 @@ spec:
                   else
                     echo "  - vaultwarden-data: PVC not present, skipped"
                   fi
+                  # A25 (18.11.2026): bisher nur in der NUC-Zweitsicherung. Ohne config.php ist
+                  # Nextcloud aus dieser Sicherung nicht startbar (Wiederherstellungsprobe A24 W2).
+                  if kubectl -n "$NS" get pvc nextcloud-app >/dev/null 2>&1; then
+                    stream_volume nextcloud-app nextcloud-app nextcloud-config.tar.gz.enc "config apps/*/appinfo/info.xml"
+                  else
+                    echo "  - nextcloud-app: PVC not present, skipped"
+                  fi
+                  for EXTRA in fuehrungsfunk-daten pocket-id-data; do
+                    if kubectl -n "$NS" get pvc "$EXTRA" >/dev/null 2>&1; then
+                      stream_volume "$EXTRA" "$EXTRA" "$EXTRA.tar.gz.enc"
+                    else
+                      echo "  - $EXTRA: PVC not present, skipped"
+                    fi
+                  done
 
                   kubectl -n "$NS" exec "$WPOD" -c backup -- sh -c "echo $FAILED > /staging/.streams-done"
 
