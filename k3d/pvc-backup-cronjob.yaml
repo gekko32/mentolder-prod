@@ -296,9 +296,11 @@ spec:
                                 # Mechanik laut T013037-Messung: jeder Aufruf ist ein Login
                                 # (~30/min Limit → sleep-Throttle), jeder Call braucht ein
                                 # timeout (CLI kann stallen). Endgültig löschen mit
-                                # `rm -y --no-trash`; die CLI fragt trotz -y nochmals,
-                                # darum `echo y |` (Probe 17.11.2026). Vorher füllte der
-                                # Papierkorb das Konto.
+                                # "rm -y --no-trash"; die CLI fragt trotz -y nochmals,
+                                # darum "echo y |" (Probe 17.11.2026). Vorher füllte der
+                                # Papierkorb das Konto. ACHTUNG: In diesem Block keine
+                                # Backticks, auch nicht in Kommentaren – die äußere Shell
+                                # wertet sie aus (F57, Ausfall 18.11.2026).
                                 RETENTION=\$${FILEN_REMOTE_RETENTION:-14}
                                 PRUNE_FAILED=0
                                 echo "Remote retention: listing \$${UPLOAD_PATH} ..."
