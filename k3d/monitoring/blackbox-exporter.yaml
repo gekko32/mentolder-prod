@@ -98,7 +98,3 @@ spec:
           regex: https://web\.mentolder\.de/.*
           targetLabel: brand
           replacement: mentolder
-        - sourceLabels: [__param_target]
-          regex: https://web\.korczewski\.de/.*
-          targetLabel: brand
-          replacement: korczewski

@@ -12,7 +12,7 @@ spec:
       rules:
         - alert: PodCrashLoopBackOff
           expr: |
-            kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff",namespace=~"workspace|workspace-korczewski"} > 0
+            kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff",namespace="workspace"} > 0
           for: 5m
           labels:
             severity: critical
@@ -23,11 +23,11 @@ spec:
           expr: |
             (
               sum by (namespace, pod, container) (
-                rate(container_cpu_usage_seconds_total{namespace=~"workspace|workspace-korczewski",container!=""}[5m])
+                rate(container_cpu_usage_seconds_total{namespace="workspace",container!=""}[5m])
               )
               /
               sum by (namespace, pod, container) (
-                kube_pod_container_resource_limits{namespace=~"workspace|workspace-korczewski",resource="cpu"}
+                kube_pod_container_resource_limits{namespace="workspace",resource="cpu"}
               )
             ) > 0.8
           for: 5m
@@ -39,9 +39,9 @@ spec:
         - alert: HighMemoryUsage
           expr: |
             (
-              container_memory_working_set_bytes{namespace=~"workspace|workspace-korczewski",container!=""}
+              container_memory_working_set_bytes{namespace="workspace",container!=""}
               /
-              kube_pod_container_resource_limits{namespace=~"workspace|workspace-korczewski",resource="memory"}
+              kube_pod_container_resource_limits{namespace="workspace",resource="memory"}
             ) > 0.9
           for: 5m
           labels:
@@ -77,7 +77,7 @@ spec:
             description: "Mehr als 1% HTTP-5xx-Fehler für 5 Minuten: {{ $value | humanizePercentage }}"
         - alert: PodRestartSpike
           expr: |
-            rate(kube_pod_container_status_restarts_total{namespace=~"workspace|workspace-korczewski"}[15m]) * 60 > 3
+            rate(kube_pod_container_status_restarts_total{namespace="workspace"}[15m]) * 60 > 3
           for: 10m
           labels:
             severity: warning
@@ -115,7 +115,7 @@ spec:
           expr: |
             (
               max without (reason) (
-                max_over_time(kube_job_status_failed{namespace=~"workspace|workspace-korczewski",job_name=~"(pvc-backup|db-backup|db-restore-verify).*"}[12h])
+                max_over_time(kube_job_status_failed{namespace="workspace",job_name=~"(pvc-backup|db-backup|db-restore-verify).*"}[12h])
               ) > 0
             )
             and on(namespace, job_name) (time() - kube_job_created < 43200)
@@ -135,13 +135,13 @@ spec:
         - alert: BackupCronJobStale
           expr: |
             (
-              (time() - kube_cronjob_status_last_successful_time{namespace=~"workspace|workspace-korczewski",cronjob=~"(pvc-backup|db-backup)"} > 93600)
+              (time() - kube_cronjob_status_last_successful_time{namespace="workspace",cronjob=~"(pvc-backup|db-backup)"} > 93600)
               and on(namespace, cronjob) (kube_cronjob_spec_suspend == 0)
             )
             or
             (
               (
-                (kube_cronjob_spec_suspend{namespace=~"workspace|workspace-korczewski",cronjob=~"(pvc-backup|db-backup)"} == 0)
+                (kube_cronjob_spec_suspend{namespace="workspace",cronjob=~"(pvc-backup|db-backup)"} == 0)
                 unless on(namespace, cronjob) kube_cronjob_status_last_successful_time
               )
               and on(namespace, cronjob) (time() - kube_cronjob_created > 93600)
@@ -158,13 +158,13 @@ spec:
         - alert: RestoreVerifyStale
           expr: |
             (
-              (time() - kube_cronjob_status_last_successful_time{namespace=~"workspace|workspace-korczewski",cronjob="db-restore-verify"} > 694800)
+              (time() - kube_cronjob_status_last_successful_time{namespace="workspace",cronjob="db-restore-verify"} > 694800)
               and on(namespace, cronjob) (kube_cronjob_spec_suspend == 0)
             )
             or
             (
               (
-                (kube_cronjob_spec_suspend{namespace=~"workspace|workspace-korczewski",cronjob="db-restore-verify"} == 0)
+                (kube_cronjob_spec_suspend{namespace="workspace",cronjob="db-restore-verify"} == 0)
                 unless on(namespace, cronjob) kube_cronjob_status_last_successful_time
               )
               and on(namespace, cronjob) (time() - kube_cronjob_created > 694800)

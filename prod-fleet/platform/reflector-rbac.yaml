@@ -35,6 +35,3 @@ subjects:
   - kind: ServiceAccount
     name: tls-sync
     namespace: workspace
-  - kind: ServiceAccount
-    name: tls-sync
-    namespace: workspace-korczewski

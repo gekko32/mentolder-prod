@@ -32,7 +32,4 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: website
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: website-korczewski
         - podSelector: {}

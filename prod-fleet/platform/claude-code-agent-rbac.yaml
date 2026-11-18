@@ -74,7 +74,4 @@ subjects:
     namespace: workspace
   - kind: ServiceAccount
     name: claude-code-agent
-    namespace: workspace-korczewski
-  - kind: ServiceAccount
-    name: claude-code-agent
     namespace: default

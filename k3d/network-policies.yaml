@@ -127,7 +127,7 @@ spec:
     - protocol: TCP
       port: 443
 ---
-# LLM-Gateway-Hosts auf dem wg-mesh erreichen (192.168.100.x mentolder, 10.13.14.x korczewski)
+# LLM-Gateway-Hosts auf dem wg-mesh erreichen (192.168.100.x mentolder; 10.13.14.x korczewski am 18.11.2026 entfernt, A20)
 # allow-internet-egress blockiert RFC1918 — diese Policy öffnet gezielt die wg-mesh-Subnets.
 # [T016450] FreeToken-Port 1919, Kubernetes-API, DNS und Pod-Netzwerk hinzugefügt.
 apiVersion: networking.k8s.io/v1
@@ -143,21 +143,6 @@ spec:
   - to:
     - ipBlock:
         cidr: 192.168.100.0/24
-    ports:
-    - protocol: TCP
-      port: 1234
-    - protocol: TCP
-      port: 1919
-    - protocol: TCP
-      port: 8081
-    - protocol: TCP
-      port: 8083
-    - protocol: TCP
-      port: 8189
-  # LLM-Gateway auf dem wg-mesh (korczewski)
-  - to:
-    - ipBlock:
-        cidr: 10.13.14.0/24
     ports:
     - protocol: TCP
       port: 1234
@@ -346,12 +331,6 @@ spec:
       protocol: TCP
   - to:
     - ipBlock:
-        cidr: 10.13.14.0/24   # korczewski wg-mesh node IPs (Janus hostNetwork after DNAT)
-    ports:
-    - port: 8188
-      protocol: TCP
-  - to:
-    - ipBlock:
         cidr: 10.20.0.0/24    # fleet wg-mesh node IPs (Janus hostNetwork on a fleet CP node)
     ports:
     - port: 8188
@@ -410,19 +389,6 @@ spec:
       protocol: UDP
     - port: 21118
       protocol: TCP
-  # wg-mesh node IPs (korzkewski)
-  - from:
-    - ipBlock:
-        cidr: 10.13.14.0/24
-    ports:
-    - port: 21115
-      protocol: TCP
-    - port: 21116
-      protocol: TCP
-    - port: 21116
-      protocol: UDP
-    - port: 21118
-      protocol: TCP
 ---
 # Nextcloud → Collabora (workspace-office Namespace, WOPI Port 9980)
 apiVersion: networking.k8s.io/v1
@@ -445,8 +411,8 @@ spec:
       protocol: TCP
 ---
 # shared-db: allow ingress from website namespace (website app DB access)
-# T901440: zusaetzlich website-korczewski (Website, DB website_massage) und
-# workspace-korczewski (Pocket ID, DB pocket_id_korczewski) — zentrale DB (ADR-012).
+# Freigaben fuer website-korczewski/workspace-korczewski am 18.11.2026 entfernt (A20,
+# Namensraeume existieren nicht mehr).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -462,16 +428,6 @@ spec:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: ${WEBSITE_NAMESPACE}
-    ports:
-    - port: 5432
-      protocol: TCP
-  - from:
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: website-korczewski
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: workspace-korczewski
     ports:
     - port: 5432
       protocol: TCP
