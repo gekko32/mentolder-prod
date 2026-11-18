@@ -76,7 +76,9 @@ env_vars:
   SYSTEMTEST_LOOP_ENABLED: "true"
   # Entwicklungswerkzeuge (ComfyUI, Web-Terminal, GPU-Host) laufen nicht in Prod;
   # leeres COMFY_HOST_IP schaltet die 3D-Generierung ab (503).
-  TERMINAL_OVERLAY_IP: "10.20.0.10"
+  # terminal-sidekick wird nicht gerendert; Pflichtwert nur fuer das Schema.
+  # Frueher 10.20.0.10 (wg-fleet, gibt es seit 21.10.2026 nicht mehr; A70).
+  TERMINAL_OVERLAY_IP: "127.0.0.1"
   LLM_ENABLED: "false"
   LLM_RERANK_ENABLED: "false"
   # In-Cluster-bge (replicas 0 bis zur Aktivierung, siehe docs/runbooks/ai-services-scale-zero.md).

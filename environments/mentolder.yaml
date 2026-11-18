@@ -42,10 +42,13 @@ env_vars:
   SMTP_HOST: smtp.mailbox.org
   SMTP_PORT: "587"
   SMTP_SECURE: "false"
-  WEBSITE_NODE_AFFINITY: '["pk-hetzner-4","pk-hetzner-6","pk-hetzner-8"]'
-  TURN_PUBLIC_IP: "204.168.244.104"
-  TURN_NODE: "pk-hetzner-4"
-  TURN_OVERLAY_IP: "10.20.0.1"
+  # A70 (18.11.2026): an fleet-mentolder.yaml angeglichen. Vorher Patricks alte
+  # Steuerknoten pk-hetzner-4/6/8 (204.168.244.104, wg-fleet 10.20.0.1), die es
+  # seit dem Neuaufbau 21.10.2026 nicht mehr gibt.
+  WEBSITE_NODE_AFFINITY: '["gekko-hetzner-2","gekko-hetzner-3","gekko-hetzner-4"]'
+  TURN_PUBLIC_IP: "178.104.169.206"
+  TURN_NODE: "gekko-hetzner-2"
+  TURN_OVERLAY_IP: "192.168.200.2"
   NEXTCLOUD_EXTERNAL_URL: "https://files.mentolder.de"
   AUTH_EXTERNAL_URL: "https://auth.mentolder.de"
   VAULT_EXTERNAL_URL: "https://vault.mentolder.de"
@@ -73,7 +76,7 @@ env_vars:
   COMFY_HOST_IP: "192.168.100.10"
   COMFY_PORT: "8189"
   RIGGER_PORT: "8190"
-  TERMINAL_OVERLAY_IP: "10.20.0.10"
+  TERMINAL_OVERLAY_IP: "127.0.0.1"   # terminal-sidekick nicht im Einsatz (A70)
   LLM_ENABLED: "true"
   LLM_RERANK_ENABLED: "true"
   LLM_RERANKER_URL: "http://llm-proxy.workspace-dev.svc.cluster.local:18235"
