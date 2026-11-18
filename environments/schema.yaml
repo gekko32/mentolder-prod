@@ -289,13 +289,13 @@ env_vars:
     required: true
     default_dev: "127.0.0.1"
     validate: "^[0-9.]+$"
-    description: "wg-fleet overlay IP of the terminal-sidekick host (10.20.0.10). Endpoints in terminal-bridge target this."
+    description: "IP of the terminal-sidekick host (Endpoints in terminal-bridge). Not deployed in prod; 127.0.0.1 there. The former wg-fleet IP 10.20.0.10 no longer exists (A70)."
 
   - name: TURN_OVERLAY_IP
     required: true
     default_dev: "127.0.0.1"
     validate: "^[0-9.]+$"
-    description: "wg-fleet overlay IP of ${TURN_NODE} (fleet pk-hetzner-4 = 10.20.0.1). Endpoints target for the RustDesk web-client bridge (T001381)."
+    description: "Private IP of ${TURN_NODE} (gekko-hetzner-2 = 192.168.200.2, Hetzner network). Endpoints target for the RustDesk web-client bridge (T001381)."
 
   - name: NEXTCLOUD_EXTERNAL_URL
     required: false
