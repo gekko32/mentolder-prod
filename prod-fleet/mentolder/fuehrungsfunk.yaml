@@ -49,6 +49,10 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+        # A72: PodSecurity "restricted" (vorher nur Warnung beim dry-run).
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: fuehrungsfunk
           # Der Render setzt hier den Digest von :latest ein (render.yml, 29.10.2026).
