@@ -12,8 +12,8 @@
 # X-Forwarded-Email und das gemeinsame Geheimnis VERWALTUNG_PROXY_GEHEIMNIS als
 # Basic-Passwort; die App erlaubt die Verwaltung nur mit beidem. (Eine Netzregel
 # "nur vom Vorschalter" ginge nicht: allow-intra-namespace-ingress gibt allen
-# workspace-Pods Zugang, Regeln addieren sich.) Der alte SENDE_TOKEN wird nicht
-# mehr gelesen.
+# workspace-Pods Zugang, Regeln addieren sich.) Der alte SENDE_TOKEN ist seit
+# 22.11.2026 auch aus dem Secret entfernt.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
