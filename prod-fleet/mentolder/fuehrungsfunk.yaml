@@ -4,10 +4,16 @@
 # https://funk.mentolder.de. Image aus github.com/gekko32/fuehrungsfunk.
 # Testbetrieb: immer :latest; nach einem neuen Image auf dem Server
 #   kubectl rollout restart deploy/fuehrungsfunk -n workspace
-# Der SENDE_TOKEN liegt im Secret "fuehrungsfunk", das einmalig von Hand auf
-# dem Server angelegt wurde (nicht in GitHub, siehe Änderungsprotokoll).
-# Kein SSO davor: Hörer kommen per Link/QR-Code ohne Anmeldung; Senden und
-# Verwalten sind über den SENDE_TOKEN geschützt.
+#
+# A72 (22.11.2026, SPEZ-FUNK-AUDIOGUIDE): Vor der App sitzt oauth2-proxy-funk mit
+# Pocket ID (Client "funk", nur Adressen aus oauth2-proxy-funk-allowed-emails).
+# Teilnehmerwege (Hören, QR-Codes, Audioguide mit Runden-Cookie) lässt er per
+# --skip-auth-route ohne Anmeldung durch. Für angemeldete Anfragen schickt er
+# X-Forwarded-Email und das gemeinsame Geheimnis VERWALTUNG_PROXY_GEHEIMNIS als
+# Basic-Passwort; die App erlaubt die Verwaltung nur mit beidem. (Eine Netzregel
+# "nur vom Vorschalter" ginge nicht: allow-intra-namespace-ingress gibt allen
+# workspace-Pods Zugang, Regeln addieren sich.) Der alte SENDE_TOKEN wird nicht
+# mehr gelesen.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -43,6 +49,10 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+        # A72: PodSecurity "restricted" (vorher nur Warnung beim dry-run).
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: fuehrungsfunk
           # Der Render setzt hier den Digest von :latest ein (render.yml, 29.10.2026).
@@ -54,11 +64,14 @@ spec:
           env:
             - name: PORT
               value: "8090"
-            - name: SENDE_TOKEN
+            # Wer verwalten darf (Senden, Hörcodes, Audioguide). Nur Gerald (A72, O1).
+            - name: VERWALTUNG_EMAILS
+              value: "quamain@web.de"
+            - name: VERWALTUNG_PROXY_GEHEIMNIS
               valueFrom:
                 secretKeyRef:
                   name: fuehrungsfunk
-                  key: SENDE_TOKEN
+                  key: VERWALTUNG_PROXY_GEHEIMNIS
           readinessProbe:
             httpGet:
               path: /status
@@ -122,6 +135,177 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: fuehrungsfunk
+                name: oauth2-proxy-funk
                 port:
-                  number: 8090
+                  number: 4180
+---
+# Anmelde-Vorschalter (A72). Zugang nur für die Adressen in dieser Liste.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oauth2-proxy-funk-allowed-emails
+  namespace: ${WORKSPACE_NAMESPACE}
+data:
+  allowed-emails: |
+    quamain@web.de
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy-funk
+  namespace: ${WORKSPACE_NAMESPACE}
+  labels:
+    app: oauth2-proxy-funk
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oauth2-proxy-funk
+  template:
+    metadata:
+      labels:
+        app: oauth2-proxy-funk
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Wie oauth2-proxy-brett: Cookie-Geheimnis (32 Zeichen) aus workspace-secrets in eine Datei.
+        - name: write-cookie-secret
+          image: busybox:1.38.0@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - printf 'cookie_secret = "%s"\n' "$(printf '%s' "$OAUTH2_PROXY_COOKIE_SECRET" | cut -c1-32)" > /run/config/oauth2-extra.cfg
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          env:
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: OAUTH2_PROXY_COOKIE_SECRET
+          volumeMounts:
+            - name: oauth2-config
+              mountPath: /run/config
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.5@sha256:8498b0d0ef0a7b29686414000a08aee467f02d0299c9ed1e006a8f33fc017916
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--config=/run/config/oauth2-extra.cfg"
+            - "--provider=oidc"
+            - "--client-id=funk"
+            - "--client-secret=$(POCKET_ID_FUNK_SECRET)"
+            - "--redirect-url=https://funk.${PROD_DOMAIN}/oauth2/callback"
+            - "--oidc-issuer-url=https://auth.${PROD_DOMAIN}"
+            - "--skip-oidc-discovery=true"
+            - "--login-url=https://auth.${PROD_DOMAIN}/authorize"
+            - "--redeem-url=https://auth.${PROD_DOMAIN}/api/oidc/token"
+            - "--oidc-jwks-url=https://auth.${PROD_DOMAIN}/.well-known/jwks.json"
+            - "--profile-url=https://auth.${PROD_DOMAIN}/api/oidc/userinfo"
+            - "--upstream=http://fuehrungsfunk:8090"
+            - "--http-address=0.0.0.0:4180"
+            - "--cookie-secure=true"
+            - "--cookie-name=_oauth2_proxy_funk"
+            # Nur die Liste, keine Domain-Freigabe (sonst käme jeder Pocket-ID-Nutzer hinein).
+            - "--authenticated-emails-file=/etc/oauth2/allowed-emails"
+            # Kein --pass-authorization-header: das würde das Basic-Passwort überschreiben.
+            - "--pass-basic-auth=true"
+            - "--basic-auth-password=$(VERWALTUNG_PROXY_GEHEIMNIS)"
+            - "--pass-user-headers=true"
+            - "--skip-provider-button=true"
+            - "--code-challenge-method=S256"
+            - "--oidc-extra-audience=funk"
+            - "--scope=openid email profile"
+            # Teilnehmerwege ohne Anmeldung (Liste: README von fuehrungsfunk, Spalte „ohne“).
+            # Die App wertet dort weder Kopffeld noch Geheimnis aus.
+            - "--skip-auth-route=GET=^/(\\?.*)?$"
+            - "--skip-auth-route=GET=^/h/[a-z0-9]+$"
+            - "--skip-auth-route=GET=^/g/[a-z0-9]+$"
+            - "--skip-auth-route=GET=^/status(\\?.*)?$"
+            - "--skip-auth-route=GET=^/stream(\\?.*)?$"
+            - "--skip-auth-route=GET=^/hoer-mp4$"
+            - "--skip-auth-route=GET=^/hoer-ws$"
+            - "--skip-auth-route=GET=^/guide(\\?.*)?$"
+            - "--skip-auth-route=GET=^/guide/api/stationen$"
+            - "--skip-auth-route=GET=^/guide/medien/[0-9a-f]{12}\\.(mp3|jpg)$"
+          env:
+            - name: POCKET_ID_FUNK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: workspace-secrets
+                  key: POCKET_ID_FUNK_SECRET
+            - name: VERWALTUNG_PROXY_GEHEIMNIS
+              valueFrom:
+                secretKeyRef:
+                  name: fuehrungsfunk
+                  key: VERWALTUNG_PROXY_GEHEIMNIS
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - containerPort: 4180
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 4180
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 4180
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 128Mi
+              cpu: 200m
+          volumeMounts:
+            - name: oauth2-config
+              mountPath: /run/config
+              readOnly: true
+            - name: allowed-emails
+              mountPath: /etc/oauth2
+              readOnly: true
+      volumes:
+        - name: oauth2-config
+          emptyDir: {}
+        - name: allowed-emails
+          configMap:
+            name: oauth2-proxy-funk-allowed-emails
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy-funk
+  namespace: ${WORKSPACE_NAMESPACE}
+spec:
+  selector:
+    app: oauth2-proxy-funk
+  ports:
+    - name: http
+      port: 4180
+      targetPort: 4180

@@ -136,6 +136,9 @@ spec:
               valueFrom: { secretKeyRef: { name: workspace-secrets, key: POCKET_ID_MAIL_SECRET, optional: true } }
             - name: SECRET_brett
               valueFrom: { secretKeyRef: { name: workspace-secrets, key: POCKET_ID_BRETT_SECRET, optional: true } }
+            # A72 (22.11.2026): Anmelde-Vorschalter vor funk.<domain> (prod-fleet/mentolder/fuehrungsfunk.yaml).
+            - name: SECRET_funk
+              valueFrom: { secretKeyRef: { name: workspace-secrets, key: POCKET_ID_FUNK_SECRET, optional: true } }
             - name: SECRET_comfy
               valueFrom: { secretKeyRef: { name: workspace-secrets, key: POCKET_ID_COMFY_SECRET, optional: true } }
             - name: SECRET_mediaviewer
@@ -255,6 +258,7 @@ spec:
               downloads|SECRET_downloads|POCKET_ID_DOWNLOADS_SECRET|$${SCHEME}://downloads.$${SUFFIX}/oauth2/callback
               mailpit-admin|SECRET_mail|POCKET_ID_MAIL_SECRET|$${SCHEME}://mail.$${SUFFIX}/oauth2/callback
               brett|SECRET_brett|POCKET_ID_BRETT_SECRET|$${SCHEME}://brett.$${SUFFIX}/oauth2/callback,$${SCHEME}://brett.$${SUFFIX}/auth/callback
+              funk|SECRET_funk|POCKET_ID_FUNK_SECRET|$${SCHEME}://funk.$${SUFFIX}/oauth2/callback
               comfy|SECRET_comfy|POCKET_ID_COMFY_SECRET|$${SCHEME}://comfy.$${SUFFIX}/oauth2/callback
               mediaviewer-widget|SECRET_mediaviewer|POCKET_ID_MEDIAVIEWER_SECRET|$${SCHEME}://mediaviewer.$${SUFFIX}/oauth2/callback
               videovault|SECRET_videovault|POCKET_ID_VIDEOVAULT_SECRET|$${SCHEME}://videovault.$${SUFFIX}/oauth2/callback
