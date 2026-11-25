@@ -94,18 +94,6 @@ spec:
                     configMapKeyRef:
                       name: backup-config
                       key: FILEN_DEFAULT_UPLOAD_PATH
-                - name: FILEN_EMAIL
-                  valueFrom:
-                    secretKeyRef:
-                      name: workspace-secrets
-                      key: FILEN_EMAIL
-                      optional: true
-                - name: FILEN_PASSWORD
-                  valueFrom:
-                    secretKeyRef:
-                      name: workspace-secrets
-                      key: FILEN_PASSWORD
-                      optional: true
               securityContext:
                 allowPrivilegeEscalation: false
                 runAsNonRoot: true
@@ -217,14 +205,14 @@ spec:
               # STAMP and UPLOAD_PATH below are read from /staging at runtime — NOT envsubst targets.
               args:
                 - |
-                  # Credentials kommen ausschliesslich aus workspace-secrets. Der
-                  # frühere Override filen-upload-credentials [T013037] ist mit
-                  # T900796 entfernt (Werte waren hash-gleich zu workspace-secrets).
-                  FILEN_EMAIL="$${FILEN_EMAIL:-}"
-                  FILEN_PASSWORD="$${FILEN_PASSWORD:-}"
-
-                  if [ -z "$${FILEN_EMAIL}" ] || [ -z "$${FILEN_PASSWORD}" ]; then
-                    echo "Filen not configured — skipping remote backup"
+                  # Anmeldung nur über die Anmeldedatei (A62, 25.11.2026): Secret
+                  # filen-auth, schreibgeschützt eingehängt unter /filen-auth. Die CLI
+                  # liest .filen-cli-auth-config aus dem Arbeitsordner, braucht kein
+                  # Passwort und keinen Zwei-Faktor-Code. E-Mail/Passwort gibt es hier
+                  # bewusst nicht mehr (Zwei-Faktor am Konto bleibt an).
+                  AUTH_DIR=/filen-auth
+                  if [ ! -s "$${AUTH_DIR}/.filen-cli-auth-config" ]; then
+                    echo "Filen not configured (no auth config) — skipping remote backup"
                     until [ -f /staging/.done ]; do sleep 2; done
                     exit 0
                   fi
@@ -243,20 +231,16 @@ spec:
                   export PATH="/tmp/npm-global/bin:$$PATH"
 
                   echo "Uploading $${STAMP} to Filen: $${UPLOAD_PATH}/$${STAMP}/"
-                  # @filen/cli authenticates with raw email+password; it derives the
-                  # PBKDF2 key / master keys / API token internally (Filen auth v2).
-                  # This invocation passes NO 2FA code, so it assumes 2FA is OFF on the
-                  # Filen account. If 2FA is enabled, the CLI blocks on an interactive
-                  # prompt forever — der timeout unten verwandelt diesen Hang in einen
-                  # sichtbaren Fehler statt 2h Deadline-Tod [T013037].
+                  # Arbeitsordner = Ordner der Anmeldedatei (schreibgeschützt; Probe
+                  # 25.11.2026: CLI schreibt dort nichts). Alle Pfade unten sind absolut.
+                  # Der timeout verwandelt ein Hängen der CLI in einen sichtbaren
+                  # Fehler statt 2h Deadline-Tod [T013037].
+                  cd "$${AUTH_DIR}"
                   UPLOAD_TIMEOUT="$${FILEN_UPLOAD_TIMEOUT:-1800}"
-                  # Anmeldung über die Umgebungsvariablen FILEN_EMAIL/FILEN_PASSWORD,
-                  # die die CLI selbst liest – nicht als Argument (sonst in der
-                  # Prozessliste sichtbar). Probe 17.11.2026 mit 0.0.39: ok.
-                  if ! timeout "$${UPLOAD_TIMEOUT}" filen \
+                  if ! timeout "$${UPLOAD_TIMEOUT}" filen --skip-update \
                        upload "/backups/$${STAMP}/" "$${UPLOAD_PATH}/$${STAMP}/"; then
                     echo "ERROR: Filen remote upload failed for $${STAMP} — the LOCAL encrypted backup on backup-pvc is intact."
-                    echo "       Likely cause: invalid FILEN_EMAIL/FILEN_PASSWORD, 2FA enabled on the account (requires 2FA OFF),"
+                    echo "       Likely cause: auth config invalid (Filen password changed → regenerate filen-auth, see LANDKARTE),"
                     echo "       or the $${UPLOAD_TIMEOUT}s upload timeout hit a stalled transfer."
                     echo "       Exiting non-zero so the broken remote backup surfaces as a Failed Job instead of being silently swallowed."
                     # restartPolicy: OnFailure retries transients in-pod; a permanent
@@ -322,25 +306,15 @@ spec:
                   # damit der Fehler als Failed Job + DBBackupJobFailed-Alert sichtbar
                   # wird (gleiche Philosophie wie beim Upload-Fehler oben).
                   [ "$${PRUNE_FAILED}" -eq 0 ] || exit 1
-              env:
-                - name: FILEN_EMAIL
-                  valueFrom:
-                    secretKeyRef:
-                      name: workspace-secrets
-                      key: FILEN_EMAIL
-                      optional: true
-                - name: FILEN_PASSWORD
-                  valueFrom:
-                    secretKeyRef:
-                      name: workspace-secrets
-                      key: FILEN_PASSWORD
-                      optional: true
               volumeMounts:
                 - name: backup-storage
                   mountPath: /backups
                   readOnly: true
                 - name: staging
                   mountPath: /staging
+                  readOnly: true
+                - name: filen-auth
+                  mountPath: /filen-auth
                   readOnly: true
               resources:
                 requests:
@@ -355,3 +329,12 @@ spec:
                 claimName: backup-pvc
             - name: staging
               emptyDir: {}
+            # Filen-Anmeldedatei (A62). Nur der Upload-Container hängt sie ein.
+            # 288 = 0440: Besitzer root, Gruppe fsGroup 65534 darf lesen.
+            - name: filen-auth
+              secret:
+                secretName: filen-auth
+                defaultMode: 288
+                items:
+                  - key: filen-cli-auth-config
+                    path: .filen-cli-auth-config
