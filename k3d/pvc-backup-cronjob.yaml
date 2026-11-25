@@ -216,10 +216,6 @@ spec:
                                 valueFrom: { configMapKeyRef: { name: backup-config, key: BRAND } }
                               - name: FILEN_DEFAULT_UPLOAD_PATH
                                 valueFrom: { configMapKeyRef: { name: backup-config, key: FILEN_DEFAULT_UPLOAD_PATH } }
-                              - name: FILEN_EMAIL
-                                valueFrom: { secretKeyRef: { name: workspace-secrets, key: FILEN_EMAIL, optional: true } }
-                              - name: FILEN_PASSWORD
-                                valueFrom: { secretKeyRef: { name: workspace-secrets, key: FILEN_PASSWORD, optional: true } }
                             command: ["/bin/bash", "-c"]
                             args:
                               - |
@@ -261,8 +257,11 @@ spec:
                             command: ["/bin/sh", "-c"]
                             args:
                               - |
-                                if [ -z "\$${FILEN_EMAIL}" ] || [ -z "\$${FILEN_PASSWORD}" ]; then
-                                  echo "Filen not configured — skipping remote backup"
+                                # Anmeldung nur über die Anmeldedatei (A62, 25.11.2026): Secret
+                                # filen-auth, schreibgeschützt unter /filen-auth; kein Passwort,
+                                # kein Zwei-Faktor-Code. Zwei-Faktor am Konto bleibt an.
+                                if [ ! -s /filen-auth/.filen-cli-auth-config ]; then
+                                  echo "Filen not configured (no auth config) — skipping remote backup"
                                   until [ -f /staging/.done ]; do sleep 2; done
                                   exit 0
                                 fi
@@ -278,12 +277,13 @@ spec:
                                   || { echo "ERROR: filen-cli install failed"; exit 1; }
                                 export PATH="/tmp/npm-global/bin:\$PATH"
                                 echo "Uploading \$${STAMP} to Filen: \$${UPLOAD_PATH}/\$${STAMP}/"
-                                # Anmeldung über die Umgebungsvariablen FILEN_EMAIL/FILEN_PASSWORD,
-                                # die die CLI selbst liest – nicht als Argument (Prozessliste).
-                                if ! filen \
+                                # Arbeitsordner = Ordner der Anmeldedatei (schreibgeschützt; Probe
+                                # 25.11.2026: CLI schreibt dort nichts). Alle Pfade unten sind absolut.
+                                cd /filen-auth
+                                if ! filen --skip-update \
                                      upload "/backups/\$${STAMP}/" "\$${UPLOAD_PATH}/\$${STAMP}/"; then
                                   echo "ERROR: Filen remote upload failed for \$${STAMP} — local backup on backup-pvc is intact."
-                                  echo "       Likely cause: invalid credentials, or 2FA enabled (this job requires 2FA OFF)."
+                                  echo "       Likely cause: auth config invalid (Filen password changed, regenerate filen-auth, see LANDKARTE)."
                                   exit 1
                                 fi
                                 echo "Filen upload done"
@@ -346,14 +346,10 @@ spec:
                                 # damit der Fehler als Failed Job sichtbar wird (gleiche
                                 # Philosophie wie beim Upload-Fehler oben).
                                 [ "\$${PRUNE_FAILED}" -eq 0 ] || exit 1
-                            env:
-                              - name: FILEN_EMAIL
-                                valueFrom: { secretKeyRef: { name: workspace-secrets, key: FILEN_EMAIL, optional: true } }
-                              - name: FILEN_PASSWORD
-                                valueFrom: { secretKeyRef: { name: workspace-secrets, key: FILEN_PASSWORD, optional: true } }
                             volumeMounts:
                               - { name: backup-storage, mountPath: /backups, readOnly: true }
                               - { name: staging,        mountPath: /staging, readOnly: true }
+                              - { name: filen-auth,     mountPath: /filen-auth, readOnly: true }
                             resources:
                               requests: { memory: 256Mi, cpu: "100m" }
                               limits:   { memory: 512Mi, cpu: "500m" }
@@ -362,6 +358,12 @@ spec:
                             persistentVolumeClaim: { claimName: backup-pvc }
                           - name: staging
                             emptyDir: {}
+                          # Filen-Anmeldedatei (A62); 288 = 0440, Gruppe fsGroup darf lesen.
+                          - name: filen-auth
+                            secret:
+                              secretName: filen-auth
+                              defaultMode: 288
+                              items: [ { key: filen-cli-auth-config, path: .filen-cli-auth-config } ]
                   MJOB
 
                   echo "Waiting for writer pod..."
