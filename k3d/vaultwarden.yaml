@@ -113,8 +113,10 @@ spec:
                   key: POCKET_ID_VAULTWARDEN_SECRET
             - name: SSO_AUTHORITY
               value: "http://pocket-id:1411"
+            # A59 (26.11.2026): keine Selbstanmeldung. Neue Konten nur per
+            # Einladung über /admin. Bestehende Konten melden sich weiter per SSO an.
             - name: SIGNUPS_ALLOWED
-              value: "true"
+              value: "false"
             - name: POCKET_ID_DOMAIN
               valueFrom:
                 configMapKeyRef:
